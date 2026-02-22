@@ -1176,6 +1176,81 @@ Not perfect, but functional. Moving on.
 
 ---
 
+### 2026-02-20/21 — Day 17-18: Build Pipeline vs Reality
+
+**The full build test finally happened — and it failed.**
+
+After 16 days of iterative development directly on the SD card, we ran `build-all.sh` end-to-end
+for the first time. The image was generated successfully (kernel, rootfs, mesa, ES, retroarch,
+panels, image — all steps completed). Flashed to a new SD card with `dd`. Booted the R36S.
+
+**Black screen.** Backlight on, LED on, but nothing displayed. 19 seconds of working SD card
+vs a completely dead new build. Time to find out what 16 days of manual fixes never made it
+into the build scripts.
+
+**The comparison methodology**
+
+Mounted both SD cards side by side:
+- BOOT2/ROOTFS2 = Working SD (manually built over 16 days, DO NOT MODIFY)
+- BOOT1/ROOTFS1 = New build from `build-all.sh` (broken)
+
+This comparison revealed **11 gaps** between the working SD and the build pipeline:
+
+**Gap 1: Missing extlinux.conf + stale uInitrd**
+
+The working SD boots via `extlinux/extlinux.conf` — U-Boot loads it FIRST, before boot.ini.
+The broken SD had a stale `uInitrd` from `output/boot/` being copied to every image. When
+boot.ini finds uInitrd, it takes the initrd path with `root=LABEL=ROOTFS` instead of
+`root=/dev/mmcblk1p2`. Working SD never had uInitrd.
+
+**Gap 2: PanCho still in boot.ini and build-image.sh**
+
+Despite retiring PanCho on Feb 19, build scripts still had PanCho loading code.
+
+**Gap 3: emulationstation.service completely missing**
+
+The BIGGEST gap. The service was created MANUALLY on the working SD during day 15's boot
+optimization session but never added to any build script. Without it, ES never starts.
+
+**Gap 4: getty@tty1 enabled instead of ES service**
+
+**Gap 5: Mesa symlink mismatch** (already fixed in previous session)
+
+**Gap 6: splash-1.raw instead of logo.bmp** — U-Boot displays `logo.bmp` natively (BMP3 format),
+not the raw BGRA that the failed archr-splash.c approach used.
+
+**Gap 7: archr-boot-setup.service diverged** — `Before=multi-user.target` + extra sleep/chmod
+vs working SD's clean `Before=emulationstation.service`.
+
+**Gap 8: Three services depended on removed getty@tty1** — hotkeys, battery-led, user@.service.d
+all had `After=getty@tty1.service`. Changed to `After=local-fs.target`.
+
+**Gap 9: fstab used `/dev/mmcblk1p3` instead of `LABEL=ROMS`** — label-based is more robust.
+
+**Gap 10: Extra DTBs on BOOT** — `*.dtb` glob copied r35s and rg351mp-linux DTBs.
+
+**Gap 11: boot-timing.service was kernel-focused** — missing ES profiling data.
+
+**All 11 gaps fixed.** Build-all.sh re-run: **SUCCESS.** Image: `ArchR-R36S-20260222.img.xz`
+(862MB compressed, 6.2GB raw).
+
+**Repo organized for first public push:**
+- README.md rewritten (build instructions, architecture, time estimates)
+- .gitignore expanded (test scripts, failed approaches, logs excluded)
+- 30 files committed, `splash-show.sh` removed from tracking
+- First release: `v0.1.0-alpha`
+
+**Biggest lesson:** Manual SD card fixes don't make it into the build pipeline automatically.
+After 16 days of iterative development, the comparison between working SD and build output was
+the only way to find these gaps. Going forward: after any manual fix, immediately update the
+build script.
+
+This is the first time the entire project — from kernel source to flashable SD card image — can
+be reproduced by running a single command. 18 days from "let's build a Linux distro for R36S"
+to a working, documented, reproducible build.
+
+---
+
 ## What's Left for v1.0 Stable
 
 ### Critical — Must Work Before Release
@@ -1199,7 +1274,7 @@ Not perfect, but functional. Moving on.
 | 10 | GPU 600MHz unlock | **WORKING** | 520→600MHz, zero overvolt, bin=2 silicon |
 | 11 | RetroArch audio | **WORKING** | Fixed by `use-ext-amplifier` DTS property (same root cause as ES) |
 | 12 | Boot time optimization | **19s confirmed** | 18MB kernel booting, U-Boot ~6-7s, ES ready @13.1s uptime |
-| 13 | Panel selection (PanCho) | Not tested | 18 DTBOs generated, boot.ini integration |
+| 13 | Panel selection          | Not tested | 18 DTBOs generated, boot.ini integration |
 | 14 | Full build from scratch | Not tested | `build-all.sh` end-to-end |
 
 ### Medium Priority — Can Ship Without, Fix in Updates
@@ -1284,151 +1359,4 @@ Not perfect, but functional. Moving on.
 
 ---
 
----
-
-### 2026-02-20/21 — Day 17-18: Build Pipeline vs Reality
-
-**The full build test finally happened — and it failed.**
-
-After 16 days of iterative development directly on the SD card, we ran `build-all.sh` end-to-end
-for the first time. The image was generated successfully (kernel, rootfs, mesa, ES, retroarch,
-panels, image — all steps completed). Flashed to a new SD card with `dd`. Booted the R36S.
-
-**Black screen.** Backlight on, LED on, but nothing displayed. 19 seconds of working SD card
-vs a completely dead new build. Time to find out what 16 days of manual fixes never made it
-into the build scripts.
-
-**The comparison methodology**
-
-Mounted both SD cards side by side:
-- BOOT2/ROOTFS2 = Working SD (manually built over 16 days, DO NOT MODIFY)
-- BOOT1/ROOTFS1 = New build from `build-all.sh` (broken)
-
-This comparison revealed **5 gaps** between the working SD and the build pipeline:
-
-**Gap 1: Missing extlinux.conf (the boot method)**
-
-The working SD boots via `extlinux/extlinux.conf` — a simple 4-line file that U-Boot loads
-FIRST, before boot.ini. The build pipeline had extlinux.conf creation in build-image.sh
-(added in a previous session), but the broken SD... wait, it DID have it? No — we had removed
-it during an earlier debugging session. But the real issue was deeper:
-
-The broken SD had a `uInitrd` file that the working SD didn't have. When boot.ini finds uInitrd,
-it takes the initrd path with `root=LABEL=ROOTFS`. Without initrd, it uses `root=/dev/mmcblk1p2`.
-The stale uInitrd in `output/boot/` was being copied to every new image. The working SD never
-had uInitrd — it was a leftover from an early build experiment.
-
-**Gap 2: PanCho still in config/boot.ini and build-image.sh**
-
-Despite retiring PanCho on Feb 19 (renaming to .disabled on the working SD), the build scripts
-still had PanCho loading code:
-- `config/boot.ini` lines 10-18: `if load mmc 1:1 0x01800000 PanCho.ini; then source...`
-- `build-image.sh` lines 243-250: `cp "$PANCHO_SRC" "$MOUNT_BOOT/PanCho.ini"`
-
-User explicitly said: "Não deveria ter PanCho, não falei pra removê-lo?"
-
-**Gap 3: emulationstation.service completely missing**
-
-The BIGGEST gap. The working SD had `emulationstation.service` enabled in
-`multi-user.target.wants/`. The broken SD had **no such file anywhere**. Without this service,
-ES simply never starts — even if the kernel boots perfectly.
-
-Root cause: build-rootfs.sh still used the old autologin approach (getty@tty1 + .bash_profile).
-The emulationstation.service was created MANUALLY on the working SD during day 15's boot
-optimization session but was never added to any build script.
-
-**Gap 4: getty@tty1 enabled**
-
-The broken SD had `getty@tty1.service` in `getty.target.wants/`. The working SD didn't.
-The ES service has `Conflicts=getty@tty1.service`, but having getty enabled means it starts
-briefly before ES conflicts stop it — wasting time and potentially interfering with DRM.
-
-**Gap 5: Mesa symlink mismatch (fixed in previous session)**
-
-`libEGL.so.1 → libEGL.so.1.1.0` (pacman's glvnd) instead of `libEGL.so.1.0.0` (Mesa 26).
-This was the Mesa save/restore issue already fixed in build-emulationstation.sh and
-build-retroarch.sh.
-
-**The fixes applied to build scripts:**
-
-1. **config/boot.ini** — Complete rewrite: removed PanCho loading, removed initrd handling,
-   simplified to just load kernel + DTB + boot. Boot.ini is now a fallback; extlinux.conf
-   is the primary boot method.
-
-2. **build-image.sh** — Removed PanCho.ini deployment and uInitrd copy. Updated extlinux.conf
-   comment from "fallback" to "primary boot method". Updated boot.ini log message.
-
-3. **build-emulationstation.sh** — Added emulationstation.service creation (cat heredoc with
-   full service definition matching the working SD's service). Added `ln -sf` to enable it
-   in `multi-user.target.wants/`. Added `rm -f` to remove getty@tty1 from
-   `getty.target.wants/`.
-
-4. **build-rootfs.sh** — Updated comments about ES launch approach (primary: systemd service,
-   fallback: autologin+.bash_profile).
-
-5. **Deleted stale uInitrd** from `output/boot/`.
-
-**Lessons learned:**
-
-The biggest takeaway: **manual SD card fixes don't make it into the build pipeline automatically.**
-After 16 days of iterative development, dozens of fixes were applied directly to the SD card
-that were never reflected in the build scripts. The comparison between working SD and build
-output was the only way to find these gaps.
-
-Going forward: after any manual SD card fix, immediately update the corresponding build script.
-And always compare build output against a known-working reference before declaring success.
-
-**Gap 6: Splash format — logo.bmp vs splash-1.raw**
-
-One more thing we missed: the build-image.sh was converting ArchR.png to raw BGRA 32bpp format
-(`splash-1.raw`) — that was for the archr-splash.c systemd service approach that FAILED (see
-Boot Splash section in memory). The working SD uses `logo.bmp` — a standard Windows 3.x BMP
-(640x480x24) that U-Boot displays natively during boot. U-Boot's Rockchip firmware loads and
-displays `logo.bmp` from the BOOT partition before running boot.ini/extlinux.
-
-Fix: replaced the entire raw BGRA conversion block with a simple BMP conversion:
-`convert ArchR.png -resize 640x480! -alpha remove -type TrueColor BMP3:logo.bmp`
-
-Output verified: identical format to working SD (PC bitmap, Windows 3.x, 640x480x24,
-cbSize 921654, bits offset 54).
-
-**Second-pass deep comparison (same session)**
-
-Remounted both SDs and did a full systematic comparison — every file, every service, every
-config. Found 5 more gaps:
-
-**Gap 7: archr-boot-setup.service diverged from working SD**
-
-Build had `Before=multi-user.target` + extra `sleep 0.1`, `chmod 666 /dev/dri/*`, and logging.
-Working SD had clean `Before=emulationstation.service`, no sleep, no chmod. Tighter ordering means
-GPU setup is guaranteed done before ES starts.
-
-**Gap 8: archr-hotkeys.service + battery-led.service + user@.service.d depended on getty@tty1**
-
-Three services still had `After=getty@tty1.service` even though getty is now removed. Changed all
-to `After=local-fs.target`. Systemd would have ignored the missing dependency silently, but it's
-logically wrong and could cause ordering surprises.
-
-**Gap 9: fstab ROMS mount used device path instead of label**
-
-Build used `/dev/mmcblk1p3` with 5s timeout. Working SD used `LABEL=ROMS` with 10s timeout.
-Label-based mounting is more robust (survives partition renumbering). Fixed in both build-image.sh
-(which overwrites fstab) and build-rootfs.sh (fallback).
-
-**Gap 10: Extra DTBs copied to BOOT partition**
-
-`build-image.sh` used `*.dtb` glob which copied rk3326-r35s-linux.dtb and
-rk3326-rg351mp-linux.dtb — not present on working SD. Changed to explicit
-`rk3326-gameconsole-r36s.dtb` only.
-
-**Gap 11: boot-timing.service was kernel-focused, not ES-focused**
-
-Working SD version waits for ES to start (After=emulationstation.service, sleep 15s), captures
-ES timeline and profiling data. Build version only captured kernel timing with 5s sleep.
-
-**Final verification:** Zero references to PanCho, uInitrd, or splash-1.raw in any build script.
-All `getty@tty1` references are intentional (Conflicts=, rm -f, or fallback autologin).
-
----
-
-*Last updated: 2026-02-22 (build pipeline fixes — 11 gaps found and fixed between working SD and build-all.sh output)*
+*Last updated: 2026-02-22 (first successful build, repo organized, ready for v0.1.0-alpha release)*
