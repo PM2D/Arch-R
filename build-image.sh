@@ -28,6 +28,19 @@ OUTPUT_DIR="$SCRIPT_DIR/output"
 ROOTFS_DIR="$OUTPUT_DIR/rootfs"
 IMAGE_DIR="$OUTPUT_DIR/images"
 IMAGE_NAME="ArchR-R36S-$(date +%Y%m%d).img"
+
+# CRITICAL: Always clean up loop devices and mounts on exit (success OR failure).
+# Without this trap, a build error leaves loop devices and mounts dangling —
+# loop device holds the image file, mounts prevent cleanup.
+LOOP_DEV=""
+cleanup_image() {
+    echo "[IMAGE] Cleaning up mounts and loop devices..."
+    umount -l "$OUTPUT_DIR/mnt_boot" 2>/dev/null || true
+    umount -l "$OUTPUT_DIR/mnt_root" 2>/dev/null || true
+    [ -n "$LOOP_DEV" ] && losetup -d "$LOOP_DEV" 2>/dev/null || true
+    rmdir "$OUTPUT_DIR/mnt_root" "$OUTPUT_DIR/mnt_boot" 2>/dev/null || true
+}
+trap cleanup_image EXIT
 IMAGE_FILE="$IMAGE_DIR/$IMAGE_NAME"
 
 # Partition sizes (in MB)
@@ -61,10 +74,10 @@ fi
 if [ ! -f "$ROOTFS_DIR/boot/Image" ]; then
     warn "Kernel Image not found in rootfs. Make sure kernel is installed."
 else
-    # Validate kernel Image size (kernel 6.6 is ~41MB, stale 4.4 was ~12MB)
+    # Validate kernel Image size (kernel 6.6 trimmed is ~18MB, stale 4.4 was ~5MB)
     IMAGE_BYTES=$(stat -c%s "$ROOTFS_DIR/boot/Image")
-    if [ "$IMAGE_BYTES" -lt 20000000 ]; then
-        warn "Kernel Image is only $(($IMAGE_BYTES / 1024 / 1024))MB — expected ~41MB for kernel 6.6!"
+    if [ "$IMAGE_BYTES" -lt 10000000 ]; then
+        warn "Kernel Image is only $(($IMAGE_BYTES / 1024 / 1024))MB — expected ~18MB for kernel 6.6!"
         warn "This may be a stale kernel 4.4 build. Run build-kernel.sh first."
         error "Aborting: kernel Image too small (likely wrong version)"
     fi
@@ -88,8 +101,8 @@ log "Step 2: Creating image file..."
 
 mkdir -p "$IMAGE_DIR"
 
-# Remove old image if exists
-[ -f "$IMAGE_FILE" ] && rm -f "$IMAGE_FILE"
+# Remove old images (current date and any previous builds)
+rm -f "$IMAGE_DIR"/ArchR-R36S-*.img "$IMAGE_DIR"/ArchR-R36S-*.img.xz
 
 # Create sparse image file
 dd if=/dev/zero of="$IMAGE_FILE" bs=1M count=0 seek=$IMAGE_SIZE 2>/dev/null
@@ -194,7 +207,8 @@ rsync -aHxS --exclude='/boot' "$ROOTFS_DIR/" "$MOUNT_ROOT/"
 log "  Copying boot files..."
 if [ -d "$ROOTFS_DIR/boot" ]; then
     cp "$ROOTFS_DIR/boot/Image" "$MOUNT_BOOT/"
-    cp "$ROOTFS_DIR/boot/"*.dtb "$MOUNT_BOOT/" 2>/dev/null || true
+    # Only copy the R36S DTB — extra DTBs (r35s, rg351mp-linux) are not needed
+    cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" "$MOUNT_BOOT/" 2>/dev/null || true
 fi
 
 # Copy U-Boot DTB (required for U-Boot display initialization)
@@ -211,29 +225,12 @@ else
     warn "U-Boot DTB not found! U-Boot may not initialize display."
 fi
 
-# Copy uInitrd if exists (optional — boot.ini has fallback)
-if [ -f "$OUTPUT_DIR/boot/uInitrd" ]; then
-    cp "$OUTPUT_DIR/boot/uInitrd" "$MOUNT_BOOT/"
-    log "  ✓ uInitrd copied"
-else
-    log "  (No uInitrd — kernel will boot without initrd)"
-fi
-
-# Copy boot.ini from config/ (kernel 6.6 + systemd + PanCho)
+# boot.ini (fallback — extlinux.conf is primary boot method)
 if [ -f "$SCRIPT_DIR/config/boot.ini" ]; then
     cp "$SCRIPT_DIR/config/boot.ini" "$MOUNT_BOOT/boot.ini"
-    log "  ✓ boot.ini installed (kernel 6.6 + PanCho)"
+    log "  ✓ boot.ini installed (fallback boot method)"
 else
     error "boot.ini not found at config/boot.ini!"
-fi
-
-# PanCho panel selection system (Arch R extended — supports clones via L1)
-PANCHO_SRC="$SCRIPT_DIR/config/PanCho.ini"
-if [ -f "$PANCHO_SRC" ]; then
-    cp "$PANCHO_SRC" "$MOUNT_BOOT/PanCho.ini"
-    log "  ✓ PanCho.ini installed (R36S + clone panels)"
-else
-    warn "PanCho.ini not found at config/PanCho.ini — panel selection will not work"
 fi
 
 # Panel DTBO overlays (ScreenFiles/)
@@ -246,62 +243,42 @@ else
     warn "Panel DTBOs not found! Run scripts/generate-panel-dtbos.sh first"
 fi
 
-# Boot splash images (convert PNG → raw BGRA 32bpp 640x480 for fb0)
-log "  Converting splash images..."
-SPLASH_SRC1="$SCRIPT_DIR/Arch-R.png"
-SPLASH_SRC2="$SCRIPT_DIR/Arch-R-2.png"
-SPLASH_CONVERTED=false
+# U-Boot logo (BMP format — U-Boot displays logo.bmp natively during boot)
+log "  Converting boot logo..."
+LOGO_SRC="$SCRIPT_DIR/ArchR.png"
 
-if command -v convert &>/dev/null; then
-    if [ -f "$SPLASH_SRC1" ]; then
-        convert "$SPLASH_SRC1" -resize 640x480! -depth 8 bgra:"$MOUNT_BOOT/splash-1.raw"
-        log "  ✓ Splash image 1 converted ($(du -h "$MOUNT_BOOT/splash-1.raw" | cut -f1))"
-        SPLASH_CONVERTED=true
-    fi
-    if [ -f "$SPLASH_SRC2" ]; then
-        convert "$SPLASH_SRC2" -resize 640x480! -depth 8 bgra:"$MOUNT_BOOT/splash-2.raw"
-        log "  ✓ Splash image 2 converted ($(du -h "$MOUNT_BOOT/splash-2.raw" | cut -f1))"
-        SPLASH_CONVERTED=true
-    fi
-elif command -v ffmpeg &>/dev/null; then
-    if [ -f "$SPLASH_SRC1" ]; then
-        ffmpeg -y -loglevel error -i "$SPLASH_SRC1" -vf "scale=640:480" -pix_fmt bgra -f rawvideo "$MOUNT_BOOT/splash-1.raw"
-        log "  ✓ Splash image 1 converted via ffmpeg"
-        SPLASH_CONVERTED=true
-    fi
-    if [ -f "$SPLASH_SRC2" ]; then
-        ffmpeg -y -loglevel error -i "$SPLASH_SRC2" -vf "scale=640:480" -pix_fmt bgra -f rawvideo "$MOUNT_BOOT/splash-2.raw"
-        log "  ✓ Splash image 2 converted via ffmpeg"
-        SPLASH_CONVERTED=true
+if [ -f "$LOGO_SRC" ]; then
+    if command -v convert &>/dev/null; then
+        convert "$LOGO_SRC" -resize 640x480! -alpha remove -type TrueColor BMP3:"$MOUNT_BOOT/logo.bmp"
+        log "  ✓ logo.bmp created ($(du -h "$MOUNT_BOOT/logo.bmp" | cut -f1))"
+    elif command -v ffmpeg &>/dev/null; then
+        ffmpeg -y -loglevel error -i "$LOGO_SRC" -vf "scale=640:480" -pix_fmt bgr24 "$MOUNT_BOOT/logo.bmp"
+        log "  ✓ logo.bmp created via ffmpeg"
+    else
+        warn "Neither imagemagick nor ffmpeg found — logo.bmp skipped"
+        warn "Install with: sudo apt install imagemagick"
     fi
 else
-    warn "Neither imagemagick nor ffmpeg found — splash images skipped"
-    warn "Install with: sudo apt install imagemagick"
+    warn "ArchR.png not found — logo.bmp skipped (U-Boot will show no logo)"
 fi
 
-if [ "$SPLASH_CONVERTED" = false ]; then
-    warn "No splash images found (Arch-R.png / Arch-R-2.png)"
-fi
-
-# Create extlinux.conf (fallback boot method — works without boot.ini/PanCho)
+# Create extlinux.conf (primary boot method — U-Boot loads this first)
 mkdir -p "$MOUNT_BOOT/extlinux"
 cat > "$MOUNT_BOOT/extlinux/extlinux.conf" << 'EXTLINUX_EOF'
 LABEL ArchR
   LINUX /Image
   FDT /rk3326-gameconsole-r36s.dtb
-  APPEND root=/dev/mmcblk1p2 rootwait rw console=tty3 fbcon=rotate:0 loglevel=0 quiet systemd.show_status=false vt.global_cursor_default=0
+  APPEND root=/dev/mmcblk1p2 rootwait rw console=ttyFIQ0 loglevel=0 quiet vt.global_cursor_default=0 consoleblank=0 printk.devkmsg=off fsck.mode=skip
 EXTLINUX_EOF
-log "  ✓ extlinux.conf installed (fallback boot method)"
+log "  ✓ extlinux.conf installed (primary boot method)"
 
 # Create fstab (overrides rootfs fstab with correct entries)
 cat > "$MOUNT_ROOT/etc/fstab" << 'FSTAB_EOF'
-# Arch R fstab
-# <device>        <dir>     <type>   <options>                              <dump> <pass>
-LABEL=BOOT        /boot     vfat     defaults                               0      2
-LABEL=ROOTFS      /         ext4     defaults,noatime                       0      1
-# ROMS partition (created by firstboot service on first boot)
-/dev/mmcblk1p3    /roms     vfat     defaults,utf8,noatime,nofail,x-systemd.device-timeout=5s  0  0
-# tmpfs — reduce SD card writes, improve performance
+# Arch R fstab — optimized for fast boot
+# fsck disabled (fsck.mode=skip in cmdline + pass=0 here)
+LABEL=BOOT        /boot     vfat     defaults,noatime                       0      0
+LABEL=ROOTFS      /         ext4     defaults,noatime                       0      0
+LABEL=ROMS        /roms     vfat     defaults,utf8,noatime,uid=1001,gid=1001,nofail,x-systemd.device-timeout=10s  0  0
 tmpfs             /tmp      tmpfs    defaults,nosuid,nodev,size=128M        0      0
 tmpfs             /var/log  tmpfs    defaults,nosuid,nodev,noexec,size=16M  0      0
 FSTAB_EOF
@@ -311,15 +288,12 @@ log "  ✓ Files copied"
 # Step 7: Cleanup
 #------------------------------------------------------------------------------
 log ""
-log "Step 7: Cleaning up..."
+log "Step 7: Syncing filesystem..."
 
 sync
-umount "$MOUNT_BOOT"
-umount "$MOUNT_ROOT"
-losetup -d "$LOOP_DEV"
-rmdir "$MOUNT_ROOT" "$MOUNT_BOOT"
 
-log "  ✓ Cleanup complete"
+# Mounts and loop device cleaned up by EXIT trap (cleanup_image)
+log "  ✓ Sync complete"
 
 #------------------------------------------------------------------------------
 # Step 8: Compress (optional)
@@ -328,6 +302,7 @@ log ""
 log "Step 8: Compressing image..."
 
 if command -v xz &> /dev/null; then
+    rm -f "${IMAGE_FILE}.xz"
     xz -9 -k "$IMAGE_FILE"
     COMPRESSED="${IMAGE_FILE}.xz"
     COMPRESSED_SIZE=$(du -h "$COMPRESSED" | cut -f1)

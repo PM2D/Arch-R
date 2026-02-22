@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import subprocess
+import re
 import select
 
 try:
@@ -30,28 +31,117 @@ BRIGHT_STEP = 3
 # Minimum brightness percentage (prevent black screen)
 BRIGHT_MIN = 5
 # Brightness persistence file
-BRIGHT_SAVE = os.path.expanduser("~/.config/archr/brightness")
+BRIGHT_SAVE = "/home/archr/.config/archr/brightness"
+VOL_SAVE = "/home/archr/.config/archr/volume"
 
-# ALSA control name for rk817 BSP codec
+# ALSA simple mixer control name for rk817 BSP codec volume
+# Raw control is "DAC Playback Volume" (numid=8), but ALSA simple mixer maps it to "DAC"
+# amixer sset 'DAC Playback Volume' FAILS — must use simple name 'DAC'
 # "Playback Path" is an enum (SPK/HP/OFF), NOT a volume control
-# "DAC Playback Volume" is the actual stereo level (0-255, inverted)
-ALSA_VOL_CTRL = "DAC Playback Volume"
+ALSA_VOL_CTRL = "DAC"
+
+# rk817 codec volume range: ALSA reports [0, 255] but codec rejects values > 252
+# Writing > 252 causes "Volume out of range" and can ZERO the volume!
+# Use percentage clamping: 0-98% stays within [0, 249] (safe margin)
+VOL_MAX_PCT = 98
+VOL_MIN_PCT = 0
+
+
+# Log to BOOT partition (FAT32) — persistent across reboots, readable from PC
+# /tmp is tmpfs and lost on power off, making debugging impossible
+LOGFILE = "/boot/archr-hotkeys.log"
+
+
+def log(msg):
+    """Append to log file for debugging."""
+    try:
+        with open(LOGFILE, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            f.flush()
+    except Exception:
+        pass
 
 
 def run_cmd(cmd):
-    """Run a shell command silently."""
+    """Run a shell command, log output for debugging."""
     try:
-        subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
+        result = subprocess.run(cmd, shell=True, capture_output=True, timeout=5, text=True)
+        if result.returncode != 0:
+            log(f"CMD FAIL [{result.returncode}]: {cmd}")
+            if result.stderr:
+                log(f"  stderr: {result.stderr.strip()}")
+        else:
+            if result.stdout:
+                log(f"  stdout: {result.stdout.strip()[:200]}")
+        return result.returncode
+    except Exception as e:
+        log(f"CMD ERROR: {cmd} -> {e}")
+        return -1
+
+
+def get_volume_pct():
+    """Read current DAC volume percentage from sysfs-style amixer output."""
+    try:
+        r = subprocess.run(
+            f"amixer sget '{ALSA_VOL_CTRL}'",
+            shell=True, capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            m = re.search(r'\[(\d+)%\]', r.stdout)
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return -1
+
+
+def set_volume_pct(pct):
+    """Set DAC volume to exact percentage (with clamping for rk817 codec safety)."""
+    pct = max(VOL_MIN_PCT, min(VOL_MAX_PCT, pct))
+    rc = run_cmd(f"amixer -q sset '{ALSA_VOL_CTRL}' {pct}%")
+    if rc != 0:
+        log(f"VOL set {pct}% failed, fallback numid=8")
+        # Convert percentage to raw value (0-249 safe range for codec max 252)
+        raw = (pct * 249) // 100
+        run_cmd(f"amixer cset numid=8 {raw},{raw}")
+    return pct
+
+
+def save_volume():
+    """Save current volume percentage for persistence across reboots."""
+    try:
+        r = subprocess.run(
+            f"amixer sget '{ALSA_VOL_CTRL}'",
+            shell=True, capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            m = re.search(r'\[(\d+)%\]', r.stdout)
+            if m:
+                os.makedirs(os.path.dirname(VOL_SAVE), exist_ok=True)
+                with open(VOL_SAVE, "w") as f:
+                    f.write(m.group(1))
     except Exception:
         pass
 
 
 def volume_up():
-    run_cmd(f"amixer -q sset '{ALSA_VOL_CTRL}' {VOL_STEP}%+")
+    cur = get_volume_pct()
+    if cur < 0:
+        cur = 80  # assume default if read fails
+    new = min(cur + VOL_STEP, VOL_MAX_PCT)
+    log(f"VOL+ {cur}% -> {new}%")
+    set_volume_pct(new)
+    save_volume()
 
 
 def volume_down():
-    run_cmd(f"amixer -q sset '{ALSA_VOL_CTRL}' {VOL_STEP}%-")
+    cur = get_volume_pct()
+    if cur < 0:
+        cur = 80
+    new = max(cur - VOL_STEP, VOL_MIN_PCT)
+    log(f"VOL- {cur}% -> {new}%")
+    set_volume_pct(new)
+    save_volume()
 
 
 def get_brightness_pct():
@@ -79,6 +169,7 @@ def save_brightness():
 
 
 def brightness_up():
+    log("BRIGHT+ brightnessctl s +3%")
     run_cmd(f"brightnessctl -q s +{BRIGHT_STEP}%")
     save_brightness()
 
@@ -164,6 +255,26 @@ def main():
     mode_held = False
 
     print("Hotkey daemon ready.")
+    # Clear previous log on fresh start
+    try:
+        with open(LOGFILE, "w") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} === Daemon started (fresh) ===\n")
+    except Exception:
+        pass
+    log(f"  vol_dev: {vol_dev.name} ({vol_dev.path})")
+    if pad_dev:
+        log(f"  pad_dev: {pad_dev.name} ({pad_dev.path})")
+
+    # Startup amixer diagnostic — confirm volume control works from daemon context
+    log("--- Startup ALSA diagnostic ---")
+    r = subprocess.run("amixer sget 'DAC' 2>&1", shell=True, capture_output=True, text=True, timeout=5)
+    log(f"  amixer sget 'DAC' rc={r.returncode}")
+    for line in r.stdout.strip().split('\n'):
+        log(f"    {line}")
+    if r.stderr.strip():
+        log(f"  stderr: {r.stderr.strip()}")
+    # Volume NOT set here — user's saved volume is restored by emulationstation.sh
+    log("--- End ALSA diagnostic ---")
 
     try:
         while True:
@@ -175,10 +286,12 @@ def main():
                         if event.type == ecodes.EV_KEY:
                             key = event.code
                             val = event.value  # 1=press, 0=release, 2=repeat
+                            # Log ALL key events for debugging
+                            keyname = ecodes.KEY.get(key, ecodes.BTN.get(key, f"?{key}"))
+                            valname = {0: "UP", 1: "DOWN", 2: "REPEAT"}.get(val, f"?{val}")
+                            log(f"KEY: {keyname}({key}) {valname} dev={dev.name} mode={mode_held}")
 
                             # Track MODE button from gamepad (passive)
-                            # val: 1=press, 0=release, 2=repeat
-                            # Don't clear on repeat (2==1 is False!)
                             if key == ecodes.BTN_MODE:
                                 if val == 1:
                                     mode_held = True

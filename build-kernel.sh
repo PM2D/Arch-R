@@ -79,6 +79,20 @@ fi
 ACTUAL_VERSION=$(make -C "$KERNEL_SRC" -s kernelversion 2>/dev/null)
 log "  Kernel: $ACTUAL_VERSION"
 
+# Copy R36S DTS from Arch-R repo into kernel source tree
+DTS_SRC="$SCRIPT_DIR/kernel/dts/rk3326-gameconsole-r36s.dts"
+DTS_DEST="$KERNEL_SRC/arch/arm64/boot/dts/rockchip/rk3326-gameconsole-r36s.dts"
+if [ -f "$DTS_SRC" ]; then
+    cp "$DTS_SRC" "$DTS_DEST"
+    log "  DTS: copied from repo"
+else
+    if [ -f "$DTS_DEST" ]; then
+        warn "DTS not in Arch-R repo — using existing kernel source copy"
+    else
+        error "DTS not found! Expected at: $DTS_SRC"
+    fi
+fi
+
 #------------------------------------------------------------------------------
 # Step 2: Configure Kernel
 #------------------------------------------------------------------------------
@@ -94,9 +108,9 @@ log "  Base: $DEFCONFIG"
 # NOT to the base config path. Must run from kernel source dir.
 if [ -f "$CONFIG_FRAGMENT" ]; then
     pushd "$KERNEL_SRC" > /dev/null
-    scripts/kconfig/merge_config.sh \
-        -m .config "$CONFIG_FRAGMENT" 2>&1 | \
-        grep -E "(^#|Value)" | head -20 || true
+    MERGE_LOG=$(scripts/kconfig/merge_config.sh \
+        -m .config "$CONFIG_FRAGMENT" 2>&1) || true
+    echo "$MERGE_LOG" | grep -E "(^#|Value)" | tail -20 || true
     popd > /dev/null
     make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
     # Verify critical GPU config was applied

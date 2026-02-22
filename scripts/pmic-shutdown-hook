@@ -1,0 +1,41 @@
+#!/bin/bash
+# Arch R — systemd shutdown hook for RK817 PMIC power-off
+#
+# Installed to: /usr/lib/systemd/system-shutdown/pmic-poweroff
+#
+# systemd-shutdown(8) executes all scripts in /usr/lib/systemd/system-shutdown/
+# at the VERY END of the shutdown sequence, after all services are stopped and
+# all filesystems are unmounted/remounted read-only.
+#
+# Argument $1 is one of: "poweroff", "halt", "reboot", "kexec"
+#
+# This script calls pmic-poweroff to cut all RK817 power rails via I2C.
+# The kernel's normal pm_power_off handler doesn't work on R36S because
+# the RK817 SLPPIN requires pinctrl_rk8xx which crashes the kernel.
+
+# Only run on poweroff or halt (NOT reboot)
+case "$1" in
+    poweroff|halt) ;;
+    *) exit 0 ;;
+esac
+
+# Try Python pmic-poweroff script (direct I2C to RK817)
+if [ -x /usr/bin/python3 ] && [ -f /usr/local/bin/pmic-poweroff ]; then
+    /usr/bin/python3 /usr/local/bin/pmic-poweroff 2>/dev/null
+fi
+
+# If we're still alive, Python approach failed.
+# Try raw I2C via shell (fallback — needs /dev/i2c-0 accessible)
+if [ -c /dev/i2c-0 ] && command -v i2cset &>/dev/null; then
+    # Mask all RK817 interrupts
+    i2cset -y -f 0 0x20 0xf9 0xff b 2>/dev/null
+    i2cset -y -f 0 0x20 0xfb 0xff b 2>/dev/null
+    i2cset -y -f 0 0x20 0xfd 0xff b 2>/dev/null
+    # Disable all power rails (LDOs then DCDCs)
+    i2cset -y -f 0 0x20 0xb4 0x00 b 2>/dev/null  # LDO9+
+    i2cset -y -f 0 0x20 0xb3 0x00 b 2>/dev/null  # LDO5-8
+    i2cset -y -f 0 0x20 0xb2 0x00 b 2>/dev/null  # LDO1-4
+    i2cset -y -f 0 0x20 0xb1 0x00 b 2>/dev/null  # DCDC1-4 + BOOST → CPU dies
+fi
+
+exit 0

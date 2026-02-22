@@ -92,7 +92,7 @@ SYSTEMS=(
     "dreamcast" "saturn"
     "arcade" "mame" "fbneo" "neogeo"
     "atari2600" "atari7800" "atarilynx"
-    "pcengine" "pcenginecd"
+    "pcengine" "pcenginecd" "supergrafx"
     "wonderswan" "wonderswancolor"
     "ngp" "ngpc"
     "virtualboy"

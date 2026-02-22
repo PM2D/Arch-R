@@ -1,0 +1,726 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Arch R - Game Console R36S device tree for kernel 6.6
+ *
+ * Based on rk3326-odroid-go.dtsi (proven kernel 6.6 base)
+ * Joypad adapted from EatPrilosec R36S DTS (odroidgo3-joypad → adc-joystick)
+ * Panel init from R36S-DTB Panel 4 V22 (simple-panel-dsi + panel-init-sequence)
+ *
+ * Copyright (C) 2024-2025 Arch R Project
+ * Copyright (C) 2022-24 JELOS (joypad layout reference)
+ */
+
+/dts-v1/;
+#include "rk3326-odroid-go.dtsi"
+
+/ {
+	model = "Game Console R36S";
+	compatible = "gameconsole,r35s", "gameconsole,r36s", "rockchip,rk3326";
+
+	aliases {
+		mmc0 = &sdio;   /* R36S internal SD (SDIO controller) */
+		mmc1 = &sdmmc;  /* R36S external SD */
+	};
+
+	/*
+	 * ADC mux for dual analog sticks
+	 * Same hardware as ODROID GO Super: GPIO mux selects between
+	 * 4 analog axes via single SARADC channel 1
+	 */
+	joystick_mux_controller: mux-controller {
+		compatible = "gpio-mux";
+		pinctrl = <&mux_en_pins>;
+		#mux-control-cells = <0>;
+		mux-gpios = <&gpio3 RK_PB3 GPIO_ACTIVE_LOW>,
+			    <&gpio3 RK_PB0 GPIO_ACTIVE_LOW>;
+	};
+
+	joystick_mux: adc-mux {
+		compatible = "io-channel-mux";
+		io-channels = <&saradc 1>;
+		io-channel-names = "parent";
+		#io-channel-cells = <1>;
+		mux-controls = <&joystick_mux_controller>;
+		channels = "0", "1", "2", "3";
+	};
+
+	analog_sticks: adc-joystick {
+		compatible = "adc-joystick";
+		io-channels = <&joystick_mux 0>,
+			      <&joystick_mux 1>,
+			      <&joystick_mux 2>,
+			      <&joystick_mux 3>;
+		poll-interval = <60>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Left stick X: inverted on R36S (abs-range swapped) */
+		axis@0 {
+			reg = <0>;
+			abs-flat = <10>;
+			abs-fuzz = <10>;
+			abs-range = <800 180>;
+			linux,code = <ABS_X>;
+		};
+
+		/* Right stick X: normal */
+		axis@1 {
+			reg = <1>;
+			abs-flat = <10>;
+			abs-fuzz = <10>;
+			abs-range = <180 800>;
+			linux,code = <ABS_RX>;
+		};
+
+		/* Left stick Y: inverted on R36S (abs-range swapped) */
+		axis@2 {
+			reg = <2>;
+			abs-flat = <10>;
+			abs-fuzz = <10>;
+			abs-range = <800 180>;
+			linux,code = <ABS_Y>;
+		};
+
+		/* Right stick Y: normal */
+		axis@3 {
+			reg = <3>;
+			abs-flat = <10>;
+			abs-fuzz = <10>;
+			abs-range = <180 800>;
+			linux,code = <ABS_RY>;
+		};
+	};
+
+	/* Volume buttons (separate from gamepad) */
+	gpio-keys-vol {
+		compatible = "gpio-keys";
+		autorepeat;
+		pinctrl-0 = <&btn_pins_vol>;
+		pinctrl-names = "default";
+
+		button-vol-down {
+			gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_LOW>;
+			label = "VOLUMEDOWN";
+			linux,code = <KEY_VOLUMEDOWN>;
+		};
+
+		button-volume-up {
+			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
+			label = "VOLUMEUP";
+			linux,code = <KEY_VOLUMEUP>;
+		};
+	};
+
+	/* Battery: R36S has 3200mAh (vs 4000mAh on ODROID GO Super) */
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <3200000>;
+		charge-term-current-microamp = <320000>;
+		constant-charge-current-max-microamp = <2000000>;
+		constant-charge-voltage-max-microvolt = <4200000>;
+		factory-internal-resistance-micro-ohms = <180000>;
+		voltage-max-design-microvolt = <4100000>;
+		voltage-min-design-microvolt = <3500000>;
+
+		ocv-capacity-celsius = <20>;
+		ocv-capacity-table-0 =  <4046950 100>, <4001920 95>, <3967900 90>, <3919950 85>,
+					<3888450 80>, <3861850 75>, <3831540 70>, <3799130 65>,
+					<3768190 60>, <3745650 55>, <3726610 50>, <3711630 45>,
+					<3696720 40>, <3685660 35>, <3674950 30>, <3663050 25>,
+					<3649470 20>, <3635260 15>, <3616920 10>, <3592440 5>,
+					<3574170 0>;
+	};
+
+	/* ============================================================
+	 * Sound card: fix for BSP rk817 codec (kernel 6.6)
+	 *
+	 * Problem 1 (DAI mismatch): Base DTSI has sound-dai = <&rk817>.
+	 * Adding compatible="rockchip,rk817-codec" causes MFD to assign
+	 * the child's own of_node → codec registers under &rk817_codec,
+	 * not &rk817 → ASoC DAI mismatch → "deferred probe pending".
+	 * Fix: point sound-dai to the codec sub-node directly.
+	 *
+	 * Problem 2 (DAPM routing): Base DTSI defines routing referencing
+	 * DAPM widgets MICL, HPOL, HPOR, SPKO. But the BSP rk817 codec
+	 * driver does NOT register any DAPM widgets — it uses "Playback
+	 * Path" / "Capture MIC Path" ALSA enums for path switching.
+	 * → "Failed to add route" → card registration fails.
+	 * Fix: remove routing and widgets (not used by BSP codec).
+	 *
+	 * Problem 3 (DAPM unknown pin): hp-det-gpio makes simple-audio-card
+	 * create a "Headphones" DAPM jack pin. With widgets deleted,
+	 * DAPM can't find the pin → "DAPM unknown pin Headphones".
+	 * Fix: keep hp-det-gpio (needed for SW_HEADPHONE_INSERT events
+	 * used by archr-hotkeys daemon) but re-add JUST the Headphone
+	 * widget (no routing — BSP codec uses Playback Path enum).
+	 * ============================================================ */
+	rk817-sound {
+		/delete-property/ simple-audio-card,routing;
+		simple-audio-card,widgets = "Headphone", "Headphones";
+		simple-audio-card,hp-det-gpio = <&gpio2 RK_PC6 GPIO_ACTIVE_LOW>;
+		simple-audio-card,codec {
+			sound-dai = <&rk817_codec>;
+		};
+	};
+};
+
+/* ============================================================
+ * Remove ODROID-specific nodes not present on R36S
+ * ============================================================ */
+/delete-node/ &gpio_led;   /* R36S has no status LEDs */
+/delete-node/ &pwm_led;    /* R36S has no PWM LED */
+/* vcc_host regulator kept — needed for USB OTG VBUS power (GPIO0 PB7) */
+
+/* Replace ODROID F1-F6 buttons with R36S-specific mapping */
+/delete-node/ &btn_f1;     /* GPIO2 PA0 → volume down (separate node) */
+/delete-node/ &btn_f2;     /* GPIO2 PA1 → volume up (separate node) */
+/delete-node/ &btn_f3;     /* GPIO2 PA2 → BTN_THUMBL */
+/delete-node/ &btn_f4;     /* GPIO2 PA3 → BTN_THUMBR */
+/delete-node/ &btn_f5;     /* GPIO2 PA4 → BTN_MODE */
+/delete-node/ &btn_f6;     /* GPIO2 PA5 → unused on R36S */
+
+/* ============================================================
+ * R36S gamepad buttons
+ * Base (rk3326-odroid-go.dtsi) already has: DPAD, ABXY, TL, TR
+ * We add: THUMBL, THUMBR, MODE, SELECT, START, TL2, TR2
+ * ============================================================ */
+&builtin_gamepad {
+	button-thumbl {
+		gpios = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
+		label = "BTN_THUMBL";
+		linux,code = <BTN_THUMBL>;
+	};
+
+	button-thumbr {
+		gpios = <&gpio2 RK_PA3 GPIO_ACTIVE_LOW>;
+		label = "BTN_THUMBR";
+		linux,code = <BTN_THUMBR>;
+	};
+
+	button-mode {
+		gpios = <&gpio2 RK_PA4 GPIO_ACTIVE_LOW>;
+		label = "BTN_MODE";
+		linux,code = <BTN_MODE>;
+	};
+
+	button-select {
+		gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>;
+		label = "SELECT";
+		linux,code = <BTN_SELECT>;
+	};
+
+	button-start {
+		gpios = <&gpio3 RK_PB4 GPIO_ACTIVE_LOW>;
+		label = "START";
+		linux,code = <BTN_START>;
+	};
+
+	button-tl2 {
+		gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>;
+		label = "TOP-LEFT 2";
+		linux,code = <BTN_TL2>;
+	};
+
+	button-tr2 {
+		gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+		label = "TOP-RIGHT 2";
+		linux,code = <BTN_TR2>;
+	};
+};
+
+/* ============================================================
+ * Panel: R36S 3.5" 640x480 MIPI-DSI (Panel 4 V22 init sequence)
+ * Uses Rockchip BSP panel-simple.c with DTS-based init sequence
+ * For multi-panel support: create overlay DTBOs or separate DTBs
+ * ============================================================ */
+&internal_display {
+	compatible = "simple-panel-dsi";
+	reset-gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_LOW>;
+	iovcc-supply = <&vcc_lcd>;
+	vdd-supply = <&vcc_lcd>;
+	backlight = <&backlight>;
+
+	prepare-delay-ms = <20>;
+	reset-delay-ms = <150>;
+	init-delay-ms = <20>;
+	enable-delay-ms = <120>;
+	disable-delay-ms = <50>;
+	unprepare-delay-ms = <20>;
+
+	width-mm = <52>;
+	height-mm = <70>;
+
+	dsi,flags = <0xa03>;  /* VIDEO | BURST | LPM | EOT_PACKET */
+	dsi,format = <0>;     /* MIPI_DSI_FMT_RGB888 */
+	dsi,lanes = <4>;
+
+	/* Panel 4 V22 MIPI DSI init sequence (from decompiled Panel4-V22.dts) */
+	panel-init-sequence = [
+		15 00 02 ff 30
+		15 00 02 ff 52
+		15 00 02 ff 01
+		15 00 02 e3 00
+		15 00 02 25 10
+		15 00 02 28 6f
+		15 00 02 29 01
+		15 00 02 2a df
+		15 00 02 2c 22
+		15 00 02 c3 0f
+		15 00 02 37 9c
+		15 00 02 38 a7
+		15 00 02 39 41
+		15 00 02 80 20
+		15 00 02 91 67
+		15 00 02 92 67
+		15 00 02 a0 55
+		15 00 02 a1 50
+		15 00 02 a3 58
+		15 00 02 a4 9c
+		15 00 02 a7 02
+		15 00 02 a8 01
+		15 00 02 a9 21
+		15 00 02 aa fc
+		15 00 02 ab 28
+		15 00 02 ac 06
+		15 00 02 ad 06
+		15 00 02 ae 06
+		15 00 02 af 03
+		15 00 02 b0 08
+		15 00 02 b1 26
+		15 00 02 b2 28
+		15 00 02 b3 28
+		15 00 02 b4 03
+		15 00 02 b5 08
+		15 00 02 b6 26
+		15 00 02 b7 08
+		15 00 02 b8 26
+		15 00 02 2c 22
+		15 00 02 5c 40
+		15 00 02 c0 00
+		15 00 02 c1 00
+		15 00 02 c2 00
+		15 00 02 ff 30
+		15 00 02 ff 52
+		15 00 02 ff 02
+		15 00 02 b0 02
+		15 00 02 d0 02
+		15 00 02 b1 0f
+		15 00 02 d1 10
+		15 00 02 b2 11
+		15 00 02 d2 12
+		15 00 02 b3 32
+		15 00 02 d3 33
+		15 00 02 b4 36
+		15 00 02 d4 36
+		15 00 02 b5 3c
+		15 00 02 d5 3c
+		15 00 02 b6 20
+		15 00 02 d6 20
+		15 00 02 b7 3e
+		15 00 02 d7 3e
+		15 00 02 b8 0e
+		15 00 02 d8 0d
+		15 00 02 b9 05
+		15 00 02 d9 05
+		15 00 02 ba 11
+		15 00 02 da 12
+		15 00 02 bb 11
+		15 00 02 db 11
+		15 00 02 bc 13
+		15 00 02 dc 14
+		15 00 02 bd 14
+		15 00 02 dd 14
+		15 00 02 be 16
+		15 00 02 de 18
+		15 00 02 bf 0e
+		15 00 02 df 0f
+		15 00 02 c0 17
+		15 00 02 e0 17
+		15 00 02 c1 07
+		15 00 02 e1 08
+		15 00 02 ff 30
+		15 00 02 ff 52
+		15 00 02 ff 03
+		15 00 02 08 8a
+		15 00 02 09 8b
+		15 00 02 30 00
+		15 00 02 31 00
+		15 00 02 32 00
+		15 00 02 33 00
+		15 00 02 34 61
+		15 00 02 35 d4
+		15 00 02 36 24
+		15 00 02 37 03
+		15 00 02 40 86
+		15 00 02 41 87
+		15 00 02 42 84
+		15 00 02 43 85
+		15 00 02 44 11
+		15 00 02 45 de
+		15 00 02 46 dd
+		15 00 02 47 11
+		15 00 02 48 e0
+		15 00 02 49 df
+		15 00 02 50 82
+		15 00 02 51 83
+		15 00 02 52 80
+		15 00 02 53 81
+		15 00 02 54 11
+		15 00 02 55 e2
+		15 00 02 56 e1
+		15 00 02 57 11
+		15 00 02 58 e4
+		15 00 02 59 e3
+		15 00 02 82 0f
+		15 00 02 83 0f
+		15 00 02 84 00
+		15 00 02 85 0f
+		15 00 02 86 0f
+		15 00 02 87 0e
+		15 00 02 88 0e
+		15 00 02 89 06
+		15 00 02 8a 06
+		15 00 02 8b 07
+		15 00 02 8c 07
+		15 00 02 8d 04
+		15 00 02 8e 04
+		15 00 02 8f 05
+		15 00 02 90 05
+		15 00 02 98 0f
+		15 00 02 99 0f
+		15 00 02 9a 00
+		15 00 02 9b 0f
+		15 00 02 9c 0f
+		15 00 02 9d 0e
+		15 00 02 9e 0e
+		15 00 02 9f 06
+		15 00 02 a0 06
+		15 00 02 a1 07
+		15 00 02 a2 07
+		15 00 02 a3 04
+		15 00 02 a4 04
+		15 00 02 a5 05
+		15 00 02 a6 05
+		15 00 02 e0 02
+		15 00 02 e1 52
+		15 00 02 ff 30
+		15 00 02 ff 52
+		15 00 02 ff 00
+		15 00 02 36 02
+		05 c8 01 11
+		05 14 01 29
+	];
+
+	panel-exit-sequence = [
+		05 14 01 28
+		05 0a 01 10
+	];
+
+	display-timings {
+		native-mode = <&timing0>;
+
+		timing0: 60Hz {
+			clock-frequency = <58000000>;
+			hactive = <640>;
+			vactive = <480>;
+			hfront-porch = <300>;
+			hsync-len = <200>;
+			hback-porch = <300>;
+			vfront-porch = <17>;
+			vsync-len = <5>;
+			vback-porch = <13>;
+			hsync-active = <0>;
+			vsync-active = <0>;
+			de-active = <0>;
+			pixelclk-active = <1>;
+		};
+	};
+};
+
+/* ============================================================
+ * PMIC: system-power-controller for shutdown/reboot
+ * NOTE: Only rockchip,system-power-controller is safe here.
+ * The full pinctrl_rk8xx sub-node with sleep/poweroff/reset
+ * states causes kernel panic on RK3326 ("Attempted to kill
+ * the idle task!") — the pinctrl-rk805 driver crashes during
+ * early MFD probe. Shutdown still works via the basic
+ * system-power-controller property.
+ * ============================================================ */
+&rk817 {
+	rockchip,system-power-controller;
+
+	battery {
+		compatible = "rk817,battery";
+		ocv_table = <3574 3592 3617 3635 3649 3663 3675
+			     3686 3697 3712 3727 3746 3768 3799
+			     3832 3862 3888 3920 3968 4002 4047>;
+		design_capacity = <3200>;
+		design_qmax = <3520>;
+		bat_res = <100>;
+		sleep_enter_current = <300>;
+		sleep_exit_current = <300>;
+		sleep_filter_current = <100>;
+		power_off_thresd = <3400>;
+		monitor_sec = <5>;
+		sample_res = <10>;
+		virtual_power = <0>;
+		charge_stay_awake = <0>;
+		fake_full_soc = <100>;
+		nominal_voltage = <3800>;
+	};
+};
+
+/* ============================================================
+ * USB OTG: Enable PHY for keyboard/controller via OTG port
+ * (Disabled in ODROID Go base — R36S needs it for USB devices)
+ * ============================================================ */
+&u2phy_otg {
+	status = "okay";
+};
+
+/* ============================================================
+ * Second SD card slot (R36S internal SD via SDIO controller)
+ * ============================================================ */
+&sdio {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	card-detect-delay = <800>;
+	cd-gpios = <&gpio3 RK_PB6 GPIO_ACTIVE_LOW>;
+	disable-wp;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	vmmc-supply = <&vcc_sd>;
+	vqmmc-supply = <&vccio_sd>;
+	status = "okay";
+};
+
+/* PWM0 for rumble motor (active but no motor on R36S — harmless) */
+&pwm0 {
+	status = "okay";
+};
+
+/* ============================================================
+ * Backlight: PWM IS working (inverted polarity = black screen).
+ * Normal polarity (flag=0) is correct for R36S backlight circuit.
+ * brightness-levels gives explicit 0-255 mapping (max=255).
+ * default-brightness-level=200 → ~78% at boot.
+ * ============================================================ */
+&backlight {
+	brightness-levels = <
+		  0   1   2   3   4   5   6   7
+		  8   9  10  11  12  13  14  15
+		 16  17  18  19  20  21  22  23
+		 24  25  26  27  28  29  30  31
+		 32  33  34  35  36  37  38  39
+		 40  41  42  43  44  45  46  47
+		 48  49  50  51  52  53  54  55
+		 56  57  58  59  60  61  62  63
+		 64  65  66  67  68  69  70  71
+		 72  73  74  75  76  77  78  79
+		 80  81  82  83  84  85  86  87
+		 88  89  90  91  92  93  94  95
+		 96  97  98  99 100 101 102 103
+		104 105 106 107 108 109 110 111
+		112 113 114 115 116 117 118 119
+		120 121 122 123 124 125 126 127
+		128 129 130 131 132 133 134 135
+		136 137 138 139 140 141 142 143
+		144 145 146 147 148 149 150 151
+		152 153 154 155 156 157 158 159
+		160 161 162 163 164 165 166 167
+		168 169 170 171 172 173 174 175
+		176 177 178 179 180 181 182 183
+		184 185 186 187 188 189 190 191
+		192 193 194 195 196 197 198 199
+		200 201 202 203 204 205 206 207
+		208 209 210 211 212 213 214 215
+		216 217 218 219 220 221 222 223
+		224 225 226 227 228 229 230 231
+		232 233 234 235 236 237 238 239
+		240 241 242 243 244 245 246 247
+		248 249 250 251 252 253 254 255>;
+	default-brightness-level = <200>;
+};
+
+/* ============================================================
+ * Pinctrl overrides for R36S button layout
+ * ============================================================ */
+&pinctrl {
+	btns {
+		btn_pins: btn-pins {
+			rockchip,pins = <1 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA5 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+		btn_pins_vol: btn-pins-vol {
+			rockchip,pins = <2 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA1 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+
+	joystick {
+		mux_en_pins: mux-pins {
+			rockchip,pins = <3 RK_PB5 RK_FUNC_GPIO &pcfg_output_low>;
+		};
+	};
+};
+
+/* Remove SPI flash (not present on R36S) */
+&sfc {
+	status = "disabled";
+};
+
+/* ============================================================
+ * RK817 sub-device compatible strings
+ * The MFD driver (rk808.c) needs compatible strings to bind
+ * of_node to each sub-device. Without them, devm_of_find_child()
+ * fails → "Failed to locate of_node [id: -1]" for battery,
+ * charger, and codec (= no audio, no battery monitoring).
+ * ============================================================ */
+/* R36S charger: must use extcon path (CONFIG_DWC_OTG_310 not enabled,
+ * so rk_bc_detect_notifier_register() always returns -EINVAL).
+ * extcon = <&u2phy> bypasses USB BC detection entirely. */
+&rk817_charger {
+	compatible = "rk817,charger";
+	monitored-battery = <&battery>;
+	extcon = <&u2phy>;
+	min_input_voltage = <4500>;
+	max_input_current = <1500>;
+	max_chrg_current = <2000>;
+	max_chrg_voltage = <4200>;
+	chrg_term_mode = <0>;
+	chrg_finish_cur = <300>;
+	virtual_power = <0>;
+	power_dc2otg = <0>;
+	sample_res = <10>;
+	otg5v_suspend_enable = <1>;
+	gate_function_disable = <0>;
+	dc_det_adc = <0>;
+};
+
+/* rk817 codec: needs explicit mclk clock (devm_clk_get looks at sub-device
+ * node, NOT parent PMIC node). Without this: "Unable to get mclk" → no audio.
+ * SCLK_I2S1_OUT = I2S1 master clock output to codec via GPIO0_PA0 (i2s1_2ch_mclk).
+ *
+ * NOTE: Do NOT add pinctrl-0 = <&i2s1_2ch_mclk> here! The parent &rk817 node
+ * in rk3326-odroid-go.dtsi already requests this pin. Adding it again on the
+ * codec sub-device causes: "pin gpio2-19 already requested by 0-0020"
+ *
+ * #sound-dai-cells needed because the rk817-sound card now references this
+ * node directly (not the parent &rk817). See sound card override below.
+ *
+ * Speaker amplifier: R36S has an external speaker amp enabled via GPIO3 PC4.
+ * The BSP rk817_codec.c reads spk-ctl-gpios and asserts it when Playback
+ * Path = SPK. Without this, the amp stays off and no sound reaches the speaker.
+ *
+ * CRITICAL: use-ext-amplifier tells the codec driver that SPK output goes through
+ * an external amplifier connected to the HP/line outputs (DACL/DACR), NOT through
+ * the internal Class-D amplifier. Without this property, the driver sets:
+ *   ADAC_CFG1 = DACBIAS_ON | DACD_ON | DACL_DOWN | DACR_DOWN (line outputs OFF!)
+ * With this property, it correctly sets:
+ *   ADAC_CFG1 = DACBIAS_ON | DACD_DOWN | DACL_ON | DACR_ON (line outputs ON!)
+ * Reference: dArkOS/arkos sauce04 DTS (original R36S Panel 4 V22). */
+&rk817_codec {
+	compatible = "rockchip,rk817-codec";
+	clocks = <&cru SCLK_I2S1_OUT>;
+	clock-names = "mclk";
+	#sound-dai-cells = <0>;
+	spk-ctl-gpios = <&gpio3 RK_PC4 GPIO_ACTIVE_HIGH>;
+	use-ext-amplifier;
+	spk-mute-delay-ms = <50>;
+	spk-volume = <3>;
+	hp-volume = <20>;
+};
+
+/* ============================================================
+ * CPU frequency unlock for R36S — Full 1512MHz
+ *
+ * dArkOS approach: instead of deleting scaling properties (which
+ * causes black screen due to broken volt_sel selection and
+ * system_monitor interaction), add rockchip,avs = <1>.
+ *
+ * How it works:
+ *   - Default avs=0 (AVS_DELETE_OPP) → disables OPPs above safe_rate
+ *   - avs=1 (AVS_SCALING_RATE) → uses avs_scale(4) check instead
+ *   - opp_scale for 1512MHz >> avs_scale(4) → exits early
+ *   - Result: ALL OPPs remain enabled (408-1512MHz)
+ *
+ * All other properties (bin-scaling-sel, pvtm-*, evb-irdrop,
+ * max-volt) are kept intact. PVTM properly selects the Lx voltage
+ * variant, system_monitor low-temp handling works correctly,
+ * and max-volt clamps low-temp voltages to safe values.
+ *
+ * Confirmed by dArkOS DTB analysis (R36S-V20 2025-05-18):
+ *   rockchip,avs = <0x01>;  (AVS_SCALING_RATE)
+ *   All scaling properties kept, 1512MHz enabled, runs fine.
+ *
+ * vdd_arm (DCDC_REG2) supports up to 1350mV.
+ * ============================================================ */
+&cpu0_opp_table {
+	rockchip,avs = <1>;
+};
+
+/* Enable DRAM 786MHz OPP (disabled by default in px30.dtsi).
+ * 666MHz → 786MHz = ~18% more memory bandwidth.
+ * vdd_logic supports up to 1175mV (786MHz needs 1100mV). */
+&dmc_opp_table {
+	opp-786000000 {
+		status = "okay";
+	};
+};
+
+/* GPU 520MHz: Already defined in rk3326.dtsi (include chain:
+ * r36s.dts → odroid-go.dtsi → rk3326.dtsi → px30.dtsi).
+ * rk3326.dtsi adds opp-520000000 at 1175mV to gpu_opp_table.
+ *
+ * Problem: vdd_logic (DCDC_REG1) max was 1150mV — 25mV short.
+ * Fix: Increase regulator max to 1175mV (RK817 DCDC1 supports
+ * up to 1.4V, so 1175mV is well within spec).
+ * For PVTM bins L1-L3, voltage is 1050-1150mV (no change needed).
+ * NPLL=1040MHz / divider=2 = 520MHz (exact PLL match). */
+&vdd_logic {
+	regulator-max-microvolt = <1175000>;
+};
+
+/* GPU overclock: 600MHz at same voltage as 520MHz (no overvolt).
+ * ARM Mali-G31 IP supports 650-800MHz, but RK3326 vdd_logic
+ * caps at 1175mV. Instead of overvolting, we keep 1175mV and
+ * test if the silicon can sustain higher clocks — same principle
+ * as PC GPU undervolting. 560MHz confirmed stable (Feb 14 2026).
+ * 520→600MHz = +15.4% GPU performance at zero voltage increase. */
+&gpu_opp_table {
+	opp-600000000 {
+		opp-hz = /bits/ 64 <600000000>;
+		opp-microvolt = <1175000 1175000 1175000>;
+		opp-microvolt-L0 = <1175000 1175000 1175000>;
+		opp-microvolt-L1 = <1175000 1175000 1175000>;
+		opp-microvolt-L2 = <1125000 1125000 1175000>;
+		opp-microvolt-L3 = <1075000 1075000 1175000>;
+	};
+};
+
+/*
+ * Fix GPU interrupt-names: Rockchip BSP px30.dtsi uses UPPERCASE ("GPU","MMU","JOB")
+ * but Panfrost driver uses platform_get_irq_byname() with lowercase ("gpu","mmu","job").
+ * strcmp() is case-sensitive → probe fails with -ENODEV without this fix.
+ * Order matches BSP: SPI45=GPU, SPI46=MMU, SPI47=JOB (same physical mapping as mainline).
+ */
+&gpu {
+	interrupt-names = "gpu", "mmu", "job";
+};

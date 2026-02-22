@@ -378,10 +378,18 @@ if [ -f "$SCRIPT_DIR/config/retroarch.cfg" ]; then
     log "  retroarch.cfg updated"
 fi
 
-# Hotkey daemon
+# Hotkey daemon + ES info bar scripts
 if [ -f "$SCRIPT_DIR/scripts/archr-hotkeys.py" ]; then
     install -m 755 "$SCRIPT_DIR/scripts/archr-hotkeys.py" "$SD/usr/local/bin/archr-hotkeys.py"
     log "  archr-hotkeys.py updated"
+fi
+if [ -f "$SCRIPT_DIR/scripts/current_volume" ]; then
+    install -m 755 "$SCRIPT_DIR/scripts/current_volume" "$SD/usr/local/bin/current_volume"
+    log "  current_volume updated"
+fi
+if [ -f "$SCRIPT_DIR/scripts/current_brightness" ]; then
+    install -m 755 "$SCRIPT_DIR/scripts/current_brightness" "$SD/usr/local/bin/current_brightness"
+    log "  current_brightness updated"
 fi
 
 # gamecontrollerdb

@@ -1,0 +1,27 @@
+#!/bin/bash
+#==============================================================================
+# Arch R — Timezone helper for EmulationStation-fcamod
+# Replaces dArkOS /usr/local/bin/timezones
+#==============================================================================
+
+case "$1" in
+    current)
+        # Return current timezone from /etc/localtime symlink
+        if [ -L /etc/localtime ]; then
+            readlink /etc/localtime | sed 's|.*/zoneinfo/||'
+        else
+            echo "UTC"
+        fi
+        ;;
+    available)
+        # Return comma-separated list of available timezones
+        # ES-fcamod expects: "Zone1,Zone2,Zone3"
+        timedatectl list-timezones 2>/dev/null | tr '\n' ',' | sed 's/,$//'
+        ;;
+    setrepo)
+        # No-op on Arch R (dArkOS uses this to set repo timezone for updates)
+        ;;
+    *)
+        echo "Usage: timezones {current|available|setrepo}"
+        ;;
+esac

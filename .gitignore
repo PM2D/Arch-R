@@ -1,32 +1,73 @@
 # Build output
 output/
-rootfs/staging/
-*.log
 
-# Archives
-*.tar.gz
-*.xz
-*.img
-# Exception: U-Boot binaries are needed
-!bootloader/u-boot-r36s-working/*.img
-
-# Kernel source (will be cloned separately)
+# Kernel and bootloader source (cloned during build)
 kernel/src/
 bootloader/src/
 
-# Build cache (cloned repos, large)
+# Build cache
 .cache/
+rootfs/staging/
 
-# Debug library copies (pulled from device for analysis)
+# Logs
+*.log
+
+# Archives and images (build artifacts)
+*.tar.gz
+*.xz
+*.img
+# Exception: U-Boot prebuilt binaries
+!bootloader/u-boot-r36s-working/*.img
+
+# Datasheets (copyrighted, not distributable)
+*.pdf
+
+# Backup/stale configs
+*.bak
+*.bak-*
+config/archr-6.6-r36s.config.bak-pre-splash
+
+# Cross-compilation (doesn't work on ARM — use native chroot)
+config/toolchain-aarch64.cmake
+cross-build-es.sh
+
+# One-off deploy/diagnostic scripts (not part of build)
+deploy-*.sh
+diagnose-sd.sh
+cleanup-*.sh
+read-logs.sh
+
+# Quick rebuild scripts (development iteration, not part of main build)
+quick-*.sh
+quick-rebuild-es.sh.backup-patches1-17
+
+# Failed splash approach (retired)
+scripts/archr-splash
+scripts/archr-splash.c
+scripts/splash-diag.sh
+scripts/splash-display.py
+scripts/splash-progress.py
+scripts/splash-show.sh
+
+# Build artifacts from scripts
+scripts/__pycache__/
+scripts/libvlc-stub-aarch64.so
+
+# Build log .txt files
+log-*.txt
+
+# Misc development files
 /lib*.so*
-
-# Debug logs in root
 /es-log*.txt
 /log.txt
-
-# One-off fix scripts (already integrated into build)
+/.config
 /apply-fix-round4.sh
 /fix-sd-issues.sh
+reddit-post.md
+scripts/auto_suspend_update.sh
 
-# Stale kernel config in root
-/.config
+# Mesa recovery script (utility, not part of build)
+restore-mesa26-gbm.sh
+
+# Website (separate project)
+website/

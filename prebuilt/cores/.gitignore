@@ -1,0 +1,3 @@
+# Prebuilt libretro cores (too large for git, not in ALARM repos)
+# Copy from SD card or build from source
+*.so

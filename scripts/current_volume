@@ -3,8 +3,9 @@
 # Returns volume percentage string
 # rk817 BSP codec uses "DAC Playback Volume" (not "Master" or "Playback")
 
-# Try DAC Playback Volume (rk817 BSP codec)
-vol=$(amixer sget 'DAC Playback Volume' 2>/dev/null | grep -o '\[.*%\]' | head -1 | tr -d '[]')
+# Try DAC volume (rk817 BSP codec)
+# Raw control is "DAC Playback Volume" (numid=8), ALSA simple mixer name is "DAC"
+vol=$(amixer sget 'DAC' 2>/dev/null | grep -o '\[.*%\]' | head -1 | tr -d '[]')
 if [ -n "$vol" ]; then
     echo "$vol"
     exit 0

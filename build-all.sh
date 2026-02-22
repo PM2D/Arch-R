@@ -142,7 +142,17 @@ if [ "$BUILD_ROOTFS" = true ]; then
     "$SCRIPT_DIR/build-rootfs.sh"
 fi
 
-# Build EmulationStation (after rootfs, before image)
+# Build Mesa 26 (after rootfs, before ES — ES links against Mesa EGL/GLES)
+if [ "$BUILD_ROOTFS" = true ]; then
+    log ""
+    log "═══════════════════════════════════════════════════════════════"
+    log "                  BUILDING MESA 26"
+    log "═══════════════════════════════════════════════════════════════"
+    chmod +x "$SCRIPT_DIR/build-mesa.sh"
+    "$SCRIPT_DIR/build-mesa.sh"
+fi
+
+# Build EmulationStation (after rootfs + Mesa, before image)
 if [ "$BUILD_ROOTFS" = true ]; then
     log ""
     log "═══════════════════════════════════════════════════════════════"
@@ -150,6 +160,16 @@ if [ "$BUILD_ROOTFS" = true ]; then
     log "═══════════════════════════════════════════════════════════════"
     chmod +x "$SCRIPT_DIR/build-emulationstation.sh"
     "$SCRIPT_DIR/build-emulationstation.sh"
+fi
+
+# Build RetroArch with KMS/DRM (after rootfs + Mesa, before image)
+if [ "$BUILD_ROOTFS" = true ]; then
+    log ""
+    log "═══════════════════════════════════════════════════════════════"
+    log "                  BUILDING RETROARCH"
+    log "═══════════════════════════════════════════════════════════════"
+    chmod +x "$SCRIPT_DIR/build-retroarch.sh"
+    "$SCRIPT_DIR/build-retroarch.sh"
 fi
 
 # Generate panel DTBOs (always, lightweight step)

@@ -1,0 +1,136 @@
+#!/usr/bin/python3
+"""
+Arch R - RK817 PMIC Direct Power-Off via I2C
+Two-stage approach:
+  Stage 1: SLPPIN_DN_FUN (standard kernel method — needs SLEEP pin)
+  Stage 2: Disable all power rails (POWER_EN registers — guaranteed)
+
+RK817 does NOT have a DEV_OFF bit like RK805/RK808.
+Power-off is via SLPPIN mechanism, but requires the SLEEP pin
+to be physically driven (via pinctrl — which crashes on RK3326).
+
+Fallback: Disable all DCDC/LDO outputs via POWER_EN registers.
+This cuts power to CPU, RAM, and all peripherals → system dies.
+
+RK817 I2C: bus=0, addr=0x20
+Register map (from include/linux/mfd/rk808.h):
+  POWER_EN_REG(0)  = 0xb1  — DCDC1-4 + BOOST enable
+  POWER_EN_REG(1)  = 0xb2  — LDO1-4 enable
+  POWER_EN_REG(2)  = 0xb3  — LDO5-8 enable
+  POWER_EN_REG(3)  = 0xb4  — LDO9 enable
+  SYS_CFG(3)       = 0xf4  — SLPPIN function + polarity
+  INT_STS_MSK_REG0 = 0xf9  — interrupt mask 0
+  INT_STS_MSK_REG1 = 0xfb  — interrupt mask 1
+  INT_STS_MSK_REG2 = 0xfd  — interrupt mask 2
+
+Uses raw I2C via /dev/i2c-0 — no i2c-tools dependency.
+"""
+import os
+import sys
+import fcntl
+import time
+
+I2C_SLAVE_FORCE = 0x0706
+I2C_BUS = '/dev/i2c-0'
+PMIC_ADDR = 0x20
+
+# RK817 registers
+SYS_CFG3 = 0xf4
+INT_STS_MSK_REG0 = 0xf9
+INT_STS_MSK_REG1 = 0xfb
+INT_STS_MSK_REG2 = 0xfd
+
+# Power enable registers — controls DCDC/LDO rail outputs
+POWER_EN_REG0 = 0xb1  # DCDC1-4, BOOST
+POWER_EN_REG1 = 0xb2  # LDO1-4
+POWER_EN_REG2 = 0xb3  # LDO5-8
+POWER_EN_REG3 = 0xb4  # LDO9+
+
+# SYS_CFG(3) bit definitions
+SLPPIN_FUNC_MSK = 0x18
+SLPPIN_DN_FUN = 0x10
+SLPPOL_MSK = 0x20
+SLPPOL_H = 0x20
+
+
+def i2c_read_reg(fd, reg):
+    os.write(fd, bytes([reg]))
+    return os.read(fd, 1)[0]
+
+
+def i2c_write_reg(fd, reg, val):
+    os.write(fd, bytes([reg, val]))
+
+
+def i2c_update_bits(fd, reg, mask, val):
+    cur = i2c_read_reg(fd, reg)
+    new = (cur & ~mask) | (val & mask)
+    i2c_write_reg(fd, reg, new)
+
+
+LOG = "/boot/pmic-poweroff.log"
+
+
+def log(msg):
+    try:
+        with open(LOG, "a") as f:
+            f.write(f"{msg}\n")
+    except Exception:
+        pass
+
+
+try:
+    log(f"=== PMIC power-off started ===")
+
+    # Sync filesystems before cutting power
+    os.sync()
+    log("Filesystems synced")
+
+    fd = os.open(I2C_BUS, os.O_RDWR)
+    fcntl.ioctl(fd, I2C_SLAVE_FORCE, PMIC_ADDR)
+
+    # Read current state for diagnostics
+    cfg3 = i2c_read_reg(fd, SYS_CFG3)
+    en0 = i2c_read_reg(fd, POWER_EN_REG0)
+    log(f"SYS_CFG3=0x{cfg3:02x} POWER_EN0=0x{en0:02x}")
+
+    # === Stage 1: Mask ALL interrupts ===
+    # Prevents any IRQ from firing during shutdown (kernel panic cause)
+    i2c_write_reg(fd, INT_STS_MSK_REG0, 0xff)
+    i2c_write_reg(fd, INT_STS_MSK_REG1, 0xff)
+    i2c_write_reg(fd, INT_STS_MSK_REG2, 0xff)
+    log("All interrupts masked")
+
+    # === Stage 2: Try SLPPIN_DN_FUN (standard method) ===
+    i2c_update_bits(fd, SYS_CFG3, SLPPIN_FUNC_MSK, 0x00)       # Clear
+    i2c_update_bits(fd, SYS_CFG3, SLPPOL_MSK, SLPPOL_H)        # Polarity HIGH
+    i2c_update_bits(fd, SYS_CFG3, SLPPIN_FUNC_MSK, SLPPIN_DN_FUN)  # Power down
+    time.sleep(0.2)  # 200ms — generous wait for SLPPIN to take effect
+    log("SLPPIN_DN_FUN set, still alive after 200ms")
+
+    # === Stage 3: Kill all power rails (guaranteed shutdown) ===
+    # RK817 has no DEV_OFF bit — SLPPIN needs physical pin drive.
+    # Without pinctrl (crashes kernel), SLEEP pin is never toggled.
+    # Solution: Disable all DCDC/LDO outputs directly.
+    # Order: LDOs first (peripherals), DCDCs last (core power).
+    # Once vdd_arm (DCDC2) is cut, CPU dies instantly.
+    log("Disabling all power rails...")
+
+    # Disable LDOs (peripherals: LCD, SD, BL, PMU, 1V8, 1V0)
+    i2c_write_reg(fd, POWER_EN_REG3, 0x00)  # LDO9+
+    i2c_write_reg(fd, POWER_EN_REG2, 0x00)  # LDO5-8
+    i2c_write_reg(fd, POWER_EN_REG1, 0x00)  # LDO1-4 (includes vcc_1v8)
+
+    # Disable DCDCs — this kills CPU power (vdd_arm=DCDC2, vdd_logic=DCDC1)
+    # After this write, the CPU has no power and the system is dead.
+    i2c_write_reg(fd, POWER_EN_REG0, 0x00)  # DCDC1-4 + BOOST
+
+    # Should never reach here — CPU is dead
+    time.sleep(5)
+    os.close(fd)
+
+except Exception as e:
+    log(f"PMIC power-off FAILED: {e}")
+    print(f"PMIC power-off failed: {e}", file=sys.stderr)
+
+sys.exit(1)
