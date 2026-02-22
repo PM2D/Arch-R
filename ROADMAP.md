@@ -1275,7 +1275,7 @@ to a working, documented, reproducible build.
 | 11 | RetroArch audio | **WORKING** | Fixed by `use-ext-amplifier` DTS property (same root cause as ES) |
 | 12 | Boot time optimization | **19s confirmed** | 18MB kernel booting, U-Boot ~6-7s, ES ready @13.1s uptime |
 | 13 | Panel selection          | Not tested | 18 DTBOs generated, boot.ini integration |
-| 14 | Full build from scratch | Not tested | `build-all.sh` end-to-end |
+| 14 | Full build from scratch | **WORKING** | `build-all.sh` end-to-end |
 
 ### Medium Priority — Can Ship Without, Fix in Updates
 
