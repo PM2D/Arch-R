@@ -1251,6 +1251,111 @@ to a working, documented, reproducible build.
 
 ---
 
+### 2026-02-22 — Day 19: Panel Auto-Detect System (PanCho Replacement)
+
+**The plan was ready. Time to build it.**
+
+After the previous session's debugging marathon with clone R36S boot issues and panel overlay
+testing, a clear plan emerged: replace PanCho's 256-line U-Boot interactive menu (which required
+R1+button combos during boot, with no audio or visual feedback) with an intelligent auto-detect
+system.
+
+**The new approach: boot.ini + panel-detect.py**
+
+The system has two parts working in tandem:
+
+1. **boot.ini** (U-Boot side): Reads `panel.txt` from the BOOT partition. If the file exists
+   and contains a `PanelDTBO` variable, loads and applies the DTBO overlay before booting the
+   kernel. If X button is held during boot, overwrites `panel-confirmed` with a 1-byte null
+   (marks as unconfirmed) and boots with default Panel 4-V22. No PanCho, no interactive menus,
+   no `sleep 3` delays.
+
+2. **panel-detect.py** (systemd service): Runs on first boot or after X-button reset. The
+   wizard cycles through all 18 panels (most common first), providing:
+   - **Audio feedback:** N beeps per panel (position in list), using in-memory WAV generation
+     + `aplay`. Works even when the screen is black (wrong panel).
+   - **Visual feedback:** Panel name displayed on tty1 (visible if panel is correct).
+   - **Button input:** A=confirm (3 rapid beeps, writes config, reboots), B=next panel.
+   - **Timeout:** Auto-advances after 15s. After 2 full cycles, auto-confirms default.
+
+**Files changed:**
+- `config/boot.ini` — Rewritten: panel.txt loading + X reset + DTBO overlay application
+- `scripts/panel-detect.py` — New: 250-line Python wizard with evdev, audio, tty1
+- `build-rootfs.sh` — Added panel-detect.service + script installation
+- `build-image.sh` — Removed extlinux.conf (boot.ini is now primary, extlinux can't do overlays)
+- `scripts/generate-panel-dtbos.sh` — Updated comments (PanCho → panel auto-detect)
+- `README.md` — Completely rewrote panel section: auto-detect wizard + manual panel.txt method
+
+**Key design decisions:**
+- **No extlinux.conf**: ODROID U-Boot 2017.09 tries extlinux first. Since extlinux doesn't
+  support FDTOVERLAYS, boot.ini must be primary. Removed extlinux from the build entirely.
+- **Audio-first UX**: Since most non-default-panel users will see a black screen on first boot,
+  audio beeps are the primary navigation mechanism. Visual is secondary (for users who already
+  have the right panel and just need to press A).
+- **Panel ordering**: Panel 4-V22 first (60%+ of units), then by popularity. Users with the
+  default panel just press A on the first beep.
+- **Persistence via FAT32**: `panel.txt` and `panel-confirmed` live on the BOOT partition
+  (FAT32), readable from any OS. Easy to debug and modify from a PC.
+
+**Deployed to SD card for testing.** Cleared panel-confirmed to force wizard on next boot.
+
+**What needs testing:**
+1. R36S original (Panel 4-V22): First boot → wizard → press A → reboot → boots normally
+2. X button reset: Hold X during boot → wizard runs again
+3. Non-default panel: Navigate with B, confirm with A → reboot → overlay applied
+4. Audio beeps work during wizard
+5. `fdt apply` works with spaces in DTBO paths (e.g., "ScreenFiles/Clone Panel 8/mipi-panel.dtbo")
+
+---
+
+### 2026-02-23 — Day 20: Clone DTS Debugging + Universal Image Architecture
+
+**Two sessions today: morning clone debugging, evening universal image design.**
+
+**Morning: Clone Type5 DTS for Kernel 6.6**
+
+The clone G80CA-MB (type5) needed a complete DTS — not just a panel overlay. The session
+from the previous conversation had created `rk3326-gameconsole-r36s-clone-type5.dts` and
+tested it on the clone hardware. Key differences from original: GPIO bank swap (buttons on
+GPIO3 instead of GPIO2), volume via adc-keys on SARADC ch2 (instead of gpio-keys), different
+panel init sequence, no USB OTG, different PMIC voltages. All fixed and confirmed working.
+
+**Evening: Universal Image Architecture Deep Dive**
+
+The big question: how to make ONE SD card image boot on both the original R36S and the clone?
+This led to the deepest investigation yet into the U-Boot source code.
+
+**U-Boot Display Chain Discovered:**
+
+The most important finding of the session: the entire display initialization mechanism. The
+ODROID U-Boot uses `hwrev.c` to read SARADC ch0 and determine the hardware model. Based on
+the ADC value, it sets the `dtb_uboot` environment variable (e.g., `rg351mp-uboot.dtb`). Then
+`init_kernel_dtb()` in `board.c` does `fatload mmc 1:1 ${fdt_addr_r} ${dtb_uboot}` — loading
+the U-Boot DTB from the BOOT FAT partition. This DTB has the panel init sequence. The DRM
+driver probes the panel from this DTB, and `lcd_show_logo()` displays the logo. All of this
+happens BEFORE boot.ini runs.
+
+This means `rg351mp-kernel.dtb` on the BOOT partition is NOT the U-Boot display DTB (despite
+what we believed for weeks). The U-Boot display DTB is `rg351mp-uboot.dtb` (or whichever the
+hwrev sets). The kernel DTB is loaded separately by boot.ini.
+
+**The Plan (approved, implementation next session):**
+
+Two-part architecture:
+1. **Board Profiles (boot.ini level):** `boards/original/` and `boards/clone-type5/` directories
+   on the BOOT partition, each with `kernel.dtb` + `ScreenFiles/`. boot.ini detects the board
+   via eMMC heuristic (eMMC present = original, absent = clone), with `board.txt` manual
+   override for edge cases.
+
+2. **Custom U-Boot (display auto-detect):** Modify `hwrev.c` to add eMMC-based detection for
+   R36S variants. Create `r36s-uboot.dts` and `r36s-clone-uboot.dts` with correct panel init
+   sequences. Build custom U-Boot from source. This gives the clone its own logo display during
+   the ~6-7s U-Boot boot phase (currently black screen).
+
+**Files to modify:** build-kernel.sh, boot.ini, build-image.sh, panel-detect.py, hwrev.c (U-Boot),
+new r36s-uboot.dts + r36s-clone-uboot.dts, new build-uboot.sh, build-all.sh.
+
+
 ## What's Left for v1.0 Stable
 
 ### Critical — Must Work Before Release
@@ -1274,7 +1379,7 @@ to a working, documented, reproducible build.
 | 10 | GPU 600MHz unlock | **WORKING** | 520→600MHz, zero overvolt, bin=2 silicon |
 | 11 | RetroArch audio | **WORKING** | Fixed by `use-ext-amplifier` DTS property (same root cause as ES) |
 | 12 | Boot time optimization | **19s confirmed** | 18MB kernel booting, U-Boot ~6-7s, ES ready @13.1s uptime |
-| 13 | Panel selection          | Not tested | 18 DTBOs generated, boot.ini integration |
+| 13 | Panel selection          | **IN DEVELOPMENT** | 18 DTBOs generated, boot.ini integration |
 | 14 | Full build from scratch | **WORKING** | `build-all.sh` end-to-end |
 
 ### Medium Priority — Can Ship Without, Fix in Updates
@@ -1359,4 +1464,4 @@ to a working, documented, reproducible build.
 
 ---
 
-*Last updated: 2026-02-22 (first successful build, repo organized, ready for v0.1.0-alpha release)*
+*Last updated: 2026-02-23 (universal image architecture designed, U-Boot display chain discovered)*
