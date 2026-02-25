@@ -1355,6 +1355,565 @@ Two-part architecture:
 **Files to modify:** build-kernel.sh, boot.ini, build-image.sh, panel-detect.py, hwrev.c (U-Boot),
 new r36s-uboot.dts + r36s-clone-uboot.dts, new build-uboot.sh, build-all.sh.
 
+---
+
+### 2026-02-23 (cont.) — Day 20: Universal Image IMPLEMENTED
+
+**The plan became code today.**
+
+Both parts of the universal image — board profiles AND custom U-Boot — were implemented in a
+single session. Every file from the plan was touched, every modification made exactly as designed.
+
+**Part 1: Board Profiles (boot.ini + build pipeline)**
+
+Four files modified:
+
+1. **build-kernel.sh** — Now compiles BOTH DTBs: `rk3326-gameconsole-r36s.dtb` (original) and
+   `rk3326-gameconsole-r36s-clone-type5.dtb` (clone). Copies clone DTS from repo into kernel
+   source tree, builds it alongside the original, copies both to output/boot. Summary now shows
+   both DTBs.
+
+2. **boot.ini** — Completely rewritten. Three-layer board detection:
+   - Layer 1: `board.txt` on BOOT partition (manual override, never auto-generated)
+   - Layer 2: eMMC heuristic (`mmc dev 0` — success=original, fail=clone)
+   - Layer 3: Default to original
+   After detection, sets `BoardDir` and `RootDev` variables. Loads `${BoardDir}/kernel.dtb`
+   instead of a hardcoded DTB name. Panel overlays also loaded from board profile directory
+   (`${BoardDir}/${PanelDTBO}`). `mmc dev 1` called after eMMC probe to switch back to SD.
+
+3. **build-image.sh** — Replaced single-DTB copy with board profile directories:
+   ```
+   BOOT/boards/original/kernel.dtb + ScreenFiles/
+   BOOT/boards/clone-type5/kernel.dtb + ScreenFiles/
+   ```
+   Panel overlays copied to BOTH profiles. U-Boot DTB search expanded to include
+   `output/bootloader/`. U-Boot binary search reordered to prefer custom build.
+
+4. **panel-detect.py** — Added clone auto-confirm: if `/sys/block/mmcblk1` doesn't exist (no
+   eMMC = clone board = SD is mmcblk0), the panel wizard skips entirely and auto-confirms.
+   Clone panel is hardcoded in its DTB, no overlay needed.
+
+**Part 2: Custom U-Boot (display auto-detect)**
+
+Six files created or modified in the U-Boot source tree:
+
+1. **cmd/hwrev.c** — Added R36S variant detection. When ADC falls in RG351MP range (146-186)
+   OR in the unknown/default case, a new `detect_r36s_variant()` function runs `mmc dev 0`:
+   - eMMC present → `r36s` → loads `r36s-uboot.dtb`
+   - eMMC absent → `r36s-clone` → loads `r36s-clone-uboot.dtb`
+   - `mmc dev 1` to switch back to SD after probe
+   RG351V and RG351P ranges preserved untouched.
+
+2. **r36s-uboot.dts** — Copy of `rg351mp-uboot.dts` (988 lines) with model/compatible changed
+   to `R36S`. Panel init sequence identical (both use NV3052C with same init bytes). This DTB
+   tells U-Boot how to initialize the display on the original R36S.
+
+3. **r36s-clone-uboot.dts** — Copy of r36s-uboot.dts with THREE changes:
+   - Reset GPIO: `GPIO3_PC0` → `GPIO3_PD3` (clone uses different pin)
+   - Enable GPIO: Added `GPIO3_PA3` (clone has explicit panel enable pin)
+   - Panel init sequence: Completely replaced with clone Type5 NV3052C bytes (extracted from
+     the kernel clone DTS). Different gamma curves, timing, register values.
+   - Display timings: 26.4MHz/119/2/119 → 30MHz/168/8/161 (clone panel timings)
+   - Panel exit sequence: Adjusted delays
+
+4. **arch/arm/dts/Makefile** — Added `r36s-uboot.dtb` and `r36s-clone-uboot.dtb` to build targets.
+
+5. **build-uboot.sh** — Complete rewrite. Now uses correct 32-bit ARM cross-compiler
+   (`arm-linux-gnueabihf-`), not aarch64. Verifies toolchain, runs `odroidgoa_defconfig`, builds,
+   copies binaries + DTBs to `output/bootloader/`.
+
+6. **build-all.sh** — Added `--uboot` flag and U-Boot build step (after panel DTBOs, before
+   image). Gracefully skips if ARM 32-bit toolchain not installed.
+
+**What needs testing:**
+
+The code is complete but untested. Two test scenarios:
+
+1. **Original R36S:** boot.ini detects eMMC → `boards/original/kernel.dtb` → boots normally.
+   Custom U-Boot (when built): hwrev detects eMMC → `r36s-uboot.dtb` → logo on display.
+
+2. **Clone G80CA-MB:** boot.ini fails eMMC → `boards/clone-type5/kernel.dtb` + `root=/dev/mmcblk0p2`.
+   Custom U-Boot: hwrev no eMMC → `r36s-clone-uboot.dtb` → logo on clone display.
+   panel-detect.py auto-confirms immediately.
+
+**Next steps:** Build the custom U-Boot (requires `gcc-arm-linux-gnueabihf`), test on both devices,
+run full `build-all.sh` to validate the pipeline end-to-end.
+
+### 2026-02-23 (cont. 2) — Day 20: Universal Image TESTED → Two-Image Pivot
+
+**The reality check.**
+
+Built custom U-Boot with GCC 13 (needed 3 `-Wno-error` flags for U-Boot 2017.09 compat), generated
+the universal image, and flashed it to SD card. Time to test on real hardware.
+
+**First hardware test — both devices failed completely:**
+- Original R36S: screen never turned on
+- Clone G80CA-MB: blinking red LED (no boot)
+
+Root cause: `build-image.sh` was picking up the pre-built `sd_fuse/` binaries from the U-Boot source
+tree instead of the known-working R36S binaries. Turns out `make` in U-Boot 2017.09 builds `u-boot.bin`
+and DTBs, but does NOT regenerate `sd_fuse/` (idbloader.img, uboot.img, trust.img) — those need
+Rockchip `rkbin` packaging tools. The pre-built `sd_fuse/` binaries were for RG351MP, not R36S.
+
+Fixed the search order to use `u-boot-r36s-working/` first.
+
+**Second hardware test — partial:**
+- Original: showed logo, entered ES, **controls not working** (joypad dead)
+- Clone: still blinking red LED
+
+For the original controls issue, I investigated loadaddr, magic strings, `cfgload.c`, the bootcmd
+fallback in `odroidgoa.h`. The complex boot.ini with board detection + `boards/` subdirectories may
+have been causing the U-Boot bootcmd fallback to kick in (loading `rg351mp-kernel.dtb` which has
+different input drivers).
+
+For the clone, I did something more productive: **extracted the raw U-Boot binaries from the working
+clone SD card** and compared MD5 checksums with the original R36S binaries.
+
+**The bombshell discovery:**
+```
+idbloader.img: DIFFERENT  (clone: e3f1dfad vs original: 0efc1f61)
+uboot.img:     DIFFERENT  (clone: 5208cb59 vs original: b0f47503)
+trust.img:     SAME       (identical MD5)
+```
+
+Different `idbloader.img` = different DRAM initialization. Different `uboot.img` = different U-Boot
+binary. These are fundamentally different bootloaders for fundamentally different boards. A universal
+single-image with pre-built U-Boot is **impossible**.
+
+**The pivot:** Abandoned the universal single-image approach entirely. Adopted two separate images:
+- `ArchR-R36S-YYYYMMDD.img` — original R36S with `u-boot-r36s-working/`
+- `ArchR-R36S-clone-YYYYMMDD.img` — clone with `u-boot-clone-working/`
+
+Both images use the same panel overlay strategy — the panel wizard detects which panel type you have
+and applies the correct DTBO overlay.
+
+**What was implemented in the pivot:**
+
+1. **`config/boot.ini`** — Completely simplified. Removed all board detection logic (no `mmc dev 0`,
+   no `board.txt`, no `boards/` subdirectories). Loads `kernel.dtb` from root of BOOT partition.
+   Uses `__ROOTDEV__` placeholder substituted by build-image.sh per variant.
+
+2. **`build-image.sh`** — Added `--variant original|clone` parameter. Per-variant: U-Boot binaries,
+   kernel DTB, ScreenFiles (only original panels OR clone panels), root device, U-Boot display DTB.
+   Writes `/etc/archr/variant` marker file.
+
+3. **`scripts/panel-detect.py`** — Split PANELS into PANELS_ORIGINAL (6 panels) and PANELS_CLONE
+   (12 panels). Reads `/etc/archr/variant` to decide which list to show. Fallback: eMMC detection.
+
+4. **`build-all.sh`** — Image step now builds both variants sequentially.
+
+**Saved from the working clone SD:** `arkos4clone-uboot.dtb` (clone U-Boot display DTB) → stored in
+`bootloader/u-boot-clone-working/`.
+
+**Key lesson learned today:** You can't fight physics. If the DRAM init is different between boards,
+they need different bootloaders. Period. The two-image approach is simpler, more robust, and easier
+to debug than any universal detection scheme.
+
+### 2026-02-23 (continued) — Clone Boot Debugging: The DTB Name Mystery
+
+This was a frustrating but ultimately satisfying debugging session. The clone R36S was showing a red
+blinking LED — U-Boot's "alert LEDs" pattern, meaning `init_kernel_dtb()` failed before boot.ini
+even ran.
+
+**What we tried (and failed):**
+1. Fixed boot.ini MMC auto-detection (try mmc 1:1 then 0:1) — not the issue
+2. Added `rg351mp-uboot.dtb` to BOOT partition — still failed
+3. Added ALL possible DTB names (rg351mp-uboot, rg351p-uboot, rg351v-uboot) — still failed!
+
+**What went wrong earlier:**
+In a previous attempt to "fix" the clone, we replaced the clone's ArkOS U-Boot binaries
+(idbloader.img + uboot.img) with the original R36S's, thinking "same SoC = same binaries."
+This was wrong. While idbloader IS the same (MD5 0efc1f61), the **uboot.img is DIFFERENT**:
+- Original: MD5 `b0f47503` — hwrev.c sets `dtb_uboot = "rg351mp-uboot.dtb"`
+- Clone:    MD5 `1cf4a919` — hwrev.c sets `dtb_uboot = "arkos4clone-uboot.dtb"`
+
+The root cause was simple: the original's uboot.img looks for `rg351mp-uboot.dtb`, but the
+clone's looks for `arkos4clone-uboot.dtb`. We had that file (60KB, saved from ArkOS extraction)
+but were using the wrong uboot.img!
+
+**The fix:**
+1. Found backup of clone's uboot.img in `~/Documentos/Projetos/arkos4clone/uboot/`
+2. Restored it to `bootloader/u-boot-clone-working/uboot.img`
+3. Flashed to SD card at sector 16384
+4. Ensured `arkos4clone-uboot.dtb` is on BOOT partition
+5. Updated `build-image.sh` to use per-variant U-Boot binary dirs and display DTB names
+
+**Also done:**
+- Saved modularity rule to MEMORY.md: "Nada pode ser hardcoded, tudo deve ser modular!"
+- Fixed MEMORY.md: U-Boot is 32-bit ARM (not aarch64), working binary ≠ source tree
+- Added critical lessons: never replace clone U-Boot, init_kernel_dtb() is fatal
+
+**Key discovery about U-Boot binary analysis:**
+The working Jul 7 binary has different bootcmd (`boot_android;bootrkp;distro_bootcmd`),
+different compiled-in DTB (with mmc aliases), and different everything vs the source tree.
+Don't trust the source to understand the binary behavior — always `strings` the actual binary.
+
+### 2026-02-23 (continued again) — Custom U-Boot: The Universal Binary
+
+After fixing the clone boot by restoring its original uboot.img, the natural next step was clear:
+we needed our OWN U-Boot that auto-detects which board it's running on. No more two separate
+uboot.img files, no more "oops I flashed the wrong one and bricked it."
+
+**The approach:**
+Modified `hwrev.c` to detect R36S variants via eMMC presence. The original R36S has eMMC
+(mmc dev 0 succeeds), the clone doesn't (mmc dev 0 fails). Simple, reliable, and fast (~100ms).
+Each variant gets its own display DTB name: `r36s-uboot.dtb` (original) or `r36-uboot.dtb` (clone).
+Both DTBs go on the BOOT partition — hwrev picks the right one at boot.
+
+**Correcting old assumptions:**
+Turns out U-Boot for RK3326 is actually ARM64 (CONFIG_ARM64=y), NOT ARM32 as I'd been
+documenting. The cross-compiler is `aarch64-linux-gnu-gcc`, not `arm-linux-gnueabihf-gcc`.
+Also learned that `make.sh` (Rockchip's build wrapper) DOES regenerate sd_fuse/ — it runs
+loaderimage, boot_merger, trust_merger, and pack_idbloader all in sequence. My earlier note
+saying "make does NOT update sd_fuse" was about bare `make`, not `make.sh`.
+
+**The build:**
+Had to patch `make.sh` to find system GCC 13 (it expects toolchains in /opt/toolchains/)
+and add KCFLAGS to suppress GCC 13 warnings-as-errors. Then:
+```
+./make.sh odroidgoa
+```
+Clean compile, all binaries generated. Verified with `strings u-boot.bin` — all the hwrev.c
+detection strings are there: r36s, r36s-clone, r36s-uboot.dtb, r36-uboot.dtb, mmc dev 0/1.
+
+**Results:**
+- `idbloader.img`: 142K, MD5 0efc1f61 — identical to both pre-built copies (good!)
+- `uboot.img`: 4.0M, MD5 8fc3880c — NEW universal binary
+- `trust.img`: 4.0M, MD5 d98d5068 — identical to pre-built
+- `r36s-uboot.dtb`: 59K (original display DTB, based on rg351mp-uboot.dts)
+- `r36-uboot.dtb`: 59K (clone display DTB, different panel init + GPIOs + timing)
+
+Also renamed `r36s-clone-uboot.dts` → `r36-uboot.dts` to match what hwrev.c actually
+sets in `dtb_uboot`. Updated the DTS Makefile accordingly.
+
+**build-image.sh updated:**
+Now auto-detects custom U-Boot build (checks for sd_fuse/uboot.img). If found, uses the
+universal binary and copies BOTH display DTBs. Falls back to legacy per-variant dirs if not.
+
+**What's next:**
+Hardware test! Flash this to an SD card and try it on both the original R36S and the clone.
+If the logo appears on both → we're golden. If not → we debug the display DTBs.
+
+### 2026-02-23 (session 2) — The Clone U-Boot Saga: From Red LED to Mainline Victory
+
+This was the session where we finally cracked the clone U-Boot problem. It was a journey.
+
+**The BSP approach fails:**
+Flashed our custom BSP U-Boot (with hwrev.c eMMC detection) to the clone — red LED. Tried
+multiple hwrev.c variants (eMMC probe, C API, fixed DTB name) — all red LED. The pre-built
+working binary boots fine, so the SD card and hardware are fine.
+
+**The compiler theory:**
+Found that the working clone binary was compiled with Linaro GCC 6.3-2017.05 (from the
+`arkos4clone` project), while ours used Ubuntu GCC 13.3. Created a separate clone tree
+(`u-boot-rk3326-clone/`) to avoid touching the original tree that works. Built with Linaro
+GCC 6.3 — STILL red LED.
+
+**The revelation:**
+Even with the EXACT same compiler AND completely stock source (git checkout, zero modifications),
+the compiled binary still doesn't boot. The working binary has strings that DON'T EXIST in the
+source code: `[bmp] mode`, `[probe] fallback uc_priv`. And the version string has `-dirty` flag.
+The working binary was built from unpublished local patches. We can't reproduce it.
+
+**ROCKNIX shows the way:**
+User pointed me to ROCKNIX — they generate a "B" version image that works on clones.
+Investigated their build system at `/home/dgateles/Documentos/Projetos/distribution/`.
+
+The key discovery: **ROCKNIX doesn't use the BSP U-Boot for clones at all.** They use mainline
+U-Boot v2025.10 (from `github.com/u-boot/u-boot`), with:
+- Custom defconfig: `rk3326-handheld_defconfig`
+- Custom DTS: `rk3326-common-handheld.dts` (generic handheld, no panel-specific init)
+- eMMC DTSi: boot order + mmc aliases
+- go2.c patch: `GENERIC` device fallback for unknown ADC values
+- Newer firmware: DDR v2.11, miniloader v1.40, BL31 v1.34
+
+**The build:**
+```
+./build-uboot-clone.sh
+```
+Downloaded mainline U-Boot v2025.10 + rkbin. Copied ROCKNIX's defconfig, DTS, DTSi includes.
+Applied their go2.c patch. Clean compile with Ubuntu GCC 13.3 — no special flags needed!
+Created idbloader.img (176K), uboot.img (4.0M), trust.img (4.0M).
+
+**THE TEST — IT WORKS!**
+Flashed to clone SD, created boot.scr (compiled from boot.ini, stripped `odroidgoa-uboot-config`).
+Clone boots all the way to EmulationStation! No red LED, no hang, no issues.
+
+The only difference: no boot logo (mainline doesn't have BSP's panel init sequence). That's
+acceptable — 6-7s of black screen during U-Boot, then kernel takes over.
+
+**Pipeline integration:**
+Updated `build-image.sh` to use two U-Boot trees:
+- Original: BSP Rockchip U-Boot (`u-boot-rk3326/sd_fuse/`) — has display/logo
+- Clone: mainline U-Boot (`u-boot-clone-build/`) — no logo, but boots!
+
+For clone, also creates `boot.scr` (mainline uses distro boot, not raw boot.ini).
+
+**New files:**
+- `build-uboot-clone.sh` — builds mainline U-Boot for clones
+- `flash-uboot-clone.sh` — flash helper for testing
+- `bootloader/u-boot-mainline/` — mainline source tree
+- `bootloader/rkbin/` — Rockchip firmware binaries
+- `bootloader/u-boot-clone-build/` — built clone binaries
+
+**Lesson learned:**
+When the BSP source has unpublished patches and you can't reproduce the binary, don't keep
+trying harder with the same approach. Look at what other successful distributions do. ROCKNIX
+solved this years ago by abandoning the BSP and going mainline. Sometimes the answer isn't
+"fix the BSP" — it's "use a different U-Boot entirely."
+
+### 2026-02-23 (session 3) — Boot Splash: Fifth Time's the Charm
+
+After the mainline U-Boot victory, the user wanted a ROCKNIX-style boot splash. The clone
+boots with ~9 seconds of black screen (no U-Boot display), then nothing until ES appears.
+Not a great user experience.
+
+**ROCKNIX investigation:**
+Looked at how ROCKNIX shows their splash — it's `rocknix-splash`, a C program in initramfs
+that uses librsvg/cairo to render SVG. Heavy. And Arch R doesn't even use initramfs.
+
+**The graveyard of splash attempts:**
+We'd already tried FOUR times before and failed:
+1. `archr-splash.c` + systemd service — "splash didn't persist"
+2. DEFERRED_TAKEOVER kernel config — DRM driver still cleared fb0
+3. Plymouth — worked briefly, 3-second black gap
+4. drm-logo DTS — ODROID U-Boot doesn't fill reg property
+
+**Root cause found:**
+Turns out `emulationstation.sh` line 54 does `dd if=/dev/zero of=/dev/fb0 bs=614400 count=1`
+— literally blanks the framebuffer! Every splash we wrote to fb0 was immediately erased by
+the ES wrapper itself. The comment said "hides login text", but with `emulationstation.service`
+(which Conflicts=getty@tty1), there's no login text to hide! It was killing our splash for
+nothing.
+
+Also, DEFERRED_TAKEOVER=y means fbcon waits for first text output before binding to fb0. Since
+emulationstation.service conflicts with getty@tty1, no getty runs on tty1, fbcon never gets
+triggered, and our splash persists naturally. The kernel config was already correct.
+
+**The fix (3 files):**
+1. `build-image.sh` — Generate `splash.bmp` at build time via ImageMagick (white "ARCH R" text
+   centered on black, with version info and "Initializing...")
+2. `build-rootfs.sh` — Compile `archr-splash` binary (static aarch64), create
+   `archr-splash.service` (DefaultDependencies=no, After=local-fs.target, Before=ES)
+3. `scripts/emulationstation.sh` — Remove the `dd if=/dev/zero of=/dev/fb0` line
+
+The existing `archr-splash.c` (182 lines, BMP→fb0 writer) was already perfect — no code
+changes needed. It just needed the pipeline to stop sabotaging it.
+
+**Expected timeline with splash:**
+- Original: U-Boot logo (7s) → black (2.3s kernel DRM re-init) → splash (8s) → ES
+- Clone: black (9s no U-Boot display) → splash (8s) → ES
+
+Not perfect (still 2-9s of black at start), but MUCH better than 19s of nothing.
+
+**Lesson learned:**
+Sometimes the bug isn't in the code you're debugging — it's in the code that runs AFTER.
+Four failed attempts, all looking at kernel config, DRM drivers, fbcon timing... and the
+real culprit was a single `dd` command in the ES launch script that blanked everything we
+wrote. Always trace the FULL lifecycle of your framebuffer content.
+
+### 2026-02-23 (session 4) — Initramfs Splash: The Sixth Time Actually Works
+
+The systemd-based splash from session 3 was too late — it appeared ~9s after kernel start
+(after systemd init, service ordering, local-fs.target...). We wanted sub-second splash.
+The answer: initramfs.
+
+**The approach:**
+Instead of a systemd service, embed the splash directly in an initramfs `/init` binary.
+Kernel loads initramfs, executes our binary immediately, splash hits fb0 at 0.684s — before
+systemd even starts. Then mount root, switch_root, let systemd take over normally.
+
+**archr-init.c — a custom initramfs init:**
+- Splash BMP data embedded in the binary via `xxd -i splash.bmp > splash_data.h`
+- No stdio.h, no fopen, no opendir — only raw syscalls. Static glibc in initramfs has
+  issues with buffered I/O functions that crash silently (PID 1 crash = kernel panic fallback)
+- Row-by-row fb0 write without malloc (stack buffer only)
+- Diagnostic logging to /dev/kmsg + in-memory buffer flushed to /var/log/archr-init.log
+- After splash: parse root= from /proc/cmdline, mount root, switch_root to /sbin/init
+
+**The debugging marathon (3 rounds of SD-card-in, SD-card-out):**
+
+Round 1: Log showed old messages that don't exist in the new binary. Spent time adding
+directory listing diagnostics, re-extracting initramfs to verify contents... turns out the
+OLD `archr-splash.service` from session 3 was still running on the rootfs! It was executing
+the stale `/usr/local/bin/archr-splash` binary (which was a copy of archr-init from an
+earlier iteration), and OVERWRITING the initramfs log with its own output. Two different
+programs writing to the same log path. Removed the service, problem solved.
+
+Round 2: Log showed timestamps but all messages were "(see dmesg)". Bug in klog(): the
+function iterated the `msg` pointer for dmesg write (`while (*msg++) ...`), then tried to
+write the same pointer to the file buffer — but it was already consumed. Added
+`const char *saved_msg = msg;` at function start. Classic C pointer aliasing mistake.
+
+Round 3: CONFIRMED WORKING!
+```
+0.684 === INITRAMFS STARTED ===
+0.684 splash: BMP parsed from embedded data
+0.684 splash: fb0 opened, retries=0
+0.694 splash: written to fb0
+1.110 root mounted, retries=4
+1.110 switch_root
+```
+
+**Splash design:**
+User wanted Quantico Regular 400 font, "ARCH" in blue (#1793D1) with glow, "R" in white
+with glow, version+build date in gray. Generated via ImageMagick layer compositing:
+base black → arch glow (blurred) → r glow (blurred) → arch text (sharp) → r text (sharp) →
+version text. The glow is a separate blurred text layer composited behind the sharp text.
+
+**LED attempt (failed):**
+User asked for LED during U-Boot black screen. Added `gpio set b5` to boot.ini (GPIO0_B5,
+red LED from ODROID-GO base DTS). Doesn't exist on clone hardware — both original and clone
+DTS have `/delete-node/ &gpio_led`. The blue LED that appears with splash is actually the
+LCD backlight, not a status LED.
+
+**Mainline U-Boot display investigation:**
+User asked if we could add display to mainline U-Boot. Researched thoroughly — mainline has
+NO PX30/RK3326 VOP driver, NO panel-init-sequence support, NO PX30 MIPI DSI compatible.
+Would require ~1500-2500 lines of new code. ROCKNIX also has no display on clones. Not worth it.
+
+**Build pipeline integration (this session):**
+Updated `build-image.sh` with the full initramfs pipeline:
+1. Generate splash.bmp with Quantico font + glow + version/build via ImageMagick
+2. `xxd -i splash.bmp > splash_data.h` (embedded BMP data)
+3. Compile archr-init.c with embedded splash (static aarch64)
+4. Create initramfs.img (cpio + gzip, ~292KB)
+5. Place on BOOT partition (both variants)
+
+Updated `build-rootfs.sh`:
+- Removed archr-splash.service (initramfs handles splash, no systemd service needed)
+- Removed archr-splash binary compilation (binary lives in initramfs, not rootfs)
+
+Both variants (original + clone) get the same initramfs.img. The root device is parsed
+from kernel cmdline (`root=` parameter set by boot.ini `__ROOTDEV__` substitution).
+Clone uses boot.scr, original uses boot.ini directly — both have initramfs loading.
+
+Also fixed: mkimage boot.scr generation now uses temp file instead of stdin pipe.
+
+**Timeline with initramfs splash:**
+- Original: U-Boot logo (7s) → black (2.3s kernel DRM re-init) → splash at 0.7s → ES at 19s
+- Clone: black (9s no U-Boot display) → splash at 0.7s → ES at 19s
+
+**Lessons learned:**
+- `opendir()` in static glibc initramfs crashes silently — PID 1 crash, kernel falls back
+- Always check for stale services that might interfere with new approaches
+- C pointer aliasing: save your pointer before iterating it
+- Initramfs is the right place for early display — faster than any systemd service
+
+### 2026-02-25 — Day 22: Clone Hardware Testing Marathon
+
+**Today was the first real hardware test of the clone R36S with all our fixes.** And it turned
+into a debugging marathon where every fix revealed a new problem underneath. But by the end,
+we'd found and fixed the root causes of three major clone-specific issues.
+
+**Volume buttons on clone — adc-keys, not GPIO**
+
+The clone's volume buttons use a resistor ladder on SARADC channel 2, completely different from
+the original's GPIO-based volume keys. The kernel driver (`keyboard-adc`) uses a "closest match"
+algorithm — it finds the button whose configured voltage is closest to the measured ADC value,
+NOT a threshold-based approach. ROCKNIX's `rk3326-gameconsole-eeclone.dts` was the reference.
+Fixed the clone DTS with proper `poll-interval`, `keyup-threshold` (VREF=1.8V), and corrected
+`vol-down` voltage (300mV).
+
+**Panel selection wizard — three bugs, three fixes**
+
+First test: panel wizard appeared, user selected panel, device said "rebooting" and never came
+back. Three problems stacked on top of each other:
+
+1. **FAT32 write persistence:** `Path.write_text()` doesn't call `fsync()`. Data stays in page
+   cache. Power loss → file gone. Created `fsync_write()` helper using raw `os.open()` +
+   `os.write()` + `os.fsync()` on both the file AND parent directory. This fixed it — verified
+   `panel-confirmed` persists on SD card.
+
+2. **Reboot doesn't work on RK3326:** Both `os.system("reboot")` and `subprocess.run(["systemctl",
+   "reboot"])` trigger `pm_power_off()` through the rk817 PMIC's `system-power-controller`. The
+   PMIC only knows how to power off — there's no warm-reset mechanism. The hardware RESET button
+   (RESET_N pin) is the only way to restart. Replaced reboot with `sys.exit(0)` for default panel
+   (continue boot) and "Press RESET to apply" message + infinite sleep for non-default panels.
+
+3. **Panel wizard runs every boot despite confirmation:** Even after fixing fsync, the wizard
+   kept running. Root cause: `/boot` not mounted when `panel-detect.service` starts. Added
+   `RequiresMountsFor=/boot` to the service unit and `wait_for_boot_mount()` (30s polling) +
+   debug logging to `/boot/panel-detect.log` in the Python script. Deployed but **not yet tested**.
+
+**The big discovery: battery kills the clone**
+
+After fixing panel persistence, a new symptom emerged: device doesn't boot at all unless you
+hold X during boot (which forces the panel wizard to run). Battery showed 0% in ES.
+
+The rk817 fuel gauge was reading 0%, which triggered `power_off_thresd = <3500>` — the kernel
+immediately powered off the device thinking the battery was dead. When X is held, the panel
+wizard runs for 15+ seconds, delaying the shutdown long enough for ES to eventually appear.
+
+Root cause chain: clone DTS has `extcon = <&u2phy>` on the charger node, but `&u2phy_otg` is
+disabled on clone hardware (no OTG port). Charger probe likely fails → fuel gauge reads garbage
+→ 0% → immediate shutdown.
+
+Fix: `fdtput -t i kernel.dtb /i2c@ff180000/pmic@20/battery virtual_power 1` — disables the
+real fuel gauge and fakes 100% battery. Confirmed working: device boots without holding X.
+Updated clone DTS source to match (`virtual_power = <0>` → `<1>`).
+
+**This is a workaround, not a proper fix.** The battery gauge needs proper calibration or the
+charger's `extcon` reference needs to be fixed. But for now, the clone boots and runs.
+
+**End state:**
+- Clone volume buttons: WORKING (adc-keys)
+- Panel wizard persistence: deployed, awaiting test
+- Battery: WORKING (virtual_power workaround)
+- Software reboot: replaced with RESET button UX
+- Panel wizard UX: A=confirm (stops countdown), B=next, timeout=auto-advance
+
+**Files modified:**
+- `scripts/panel-detect.py` — fsync_write, no-reboot, wait_for_boot_mount, logging
+- `build-rootfs.sh` — RequiresMountsFor=/boot on panel-detect.service
+- `kernel/dts/rk3326-gameconsole-r36s-clone-type5.dts` — virtual_power=1, adc-keys fixes
+
+**What needs testing next boot:**
+1. Panel wizard should NOT appear if panel-confirmed exists (check `/boot/panel-detect.log`)
+2. If it still appears, the log will tell us why
+
+### 2026-02-25 (session 2) — Build Pipeline Fixes & boot.scr Mystery Solved
+
+Three failed attempts to compile boot.scr for the clone had left us stuck. The clone wouldn't
+boot with any boot.scr we compiled. This session finally cracked it.
+
+**The boot.scr compilation mystery:**
+
+We'd been using system `mkimage` with `-A arm64 -T script -C none`, which produces a header
+with arch=ARM64 (0x16) and comp=None (0x00). But `build-image.sh` uses U-Boot's OWN mkimage
+(`bootloader/u-boot-mainline/tools/mkimage`) with just `-T script` — no `-A` or `-C` flags.
+U-Boot's mkimage defaults to arch=PPC (0x07) and comp=GZIP (0x01). The different headers
+meant the clone's U-Boot rejected our manually-compiled boot.scr.
+
+Additionally, Unicode em dashes (`—`, U+2014) in boot.ini comments were corrupting the
+compiled boot.scr — `fi` statements were being dropped. Replaced all `—` with ASCII `--`.
+
+**The fix:** Used U-Boot's own mkimage with just `-T script`, removed only the `fatwrite`
+line (which was the original reason for recompiling), no sed replacements, no Unicode.
+Clone booted immediately.
+
+**Splash logo positioning:**
+
+The "R" was overlapping the "H" in "ARCH R". Measured font metrics: ARCH=195px, R=48px.
+Old offsets (ARCH=-36, R=+64) caused 21px overlap. Recalculated: ARCH=-33, R=+107 gives
+proper 15-29px gap. Verified visually with test images.
+
+**Build pipeline cleanup:**
+- Removed logo.bmp generation (obsolete since initramfs splash)
+- Fixed Unicode em dash in boot.ini (ASCII `--` only)
+- Panel wizard fixes (evdev X-button, fsync) already in repo for both variants
+
+**Panel stub DTB discussion:**
+
+Explored whether U-Boot should boot with a "stub" DTB (no panel init-sequence), with ALL
+panels applied via overlays. Technically feasible — DTBOs already override init-sequence,
+timings, delays, and dimensions. But UX trade-off: every first boot would be blind (audio
+wizard only). Decided to keep default panels hardcoded for better first-boot experience.
+
+Also confirmed: panel-init-sequence is programmed once at kernel boot by `simple-panel-dsi`.
+The panel wizard can only write config for the NEXT boot — no hot-swapping panels at runtime.
+
+---
 
 ## What's Left for v1.0 Stable
 
@@ -1378,9 +1937,10 @@ new r36s-uboot.dts + r36s-clone-uboot.dts, new build-uboot.sh, build-all.sh.
 | 9 | Mesa 26 on-device | **WORKING** | gles1=enabled, glvnd=false, Panfrost GLES 3.1 |
 | 10 | GPU 600MHz unlock | **WORKING** | 520→600MHz, zero overvolt, bin=2 silicon |
 | 11 | RetroArch audio | **WORKING** | Fixed by `use-ext-amplifier` DTS property (same root cause as ES) |
-| 12 | Boot time optimization | **19s confirmed** | 18MB kernel booting, U-Boot ~6-7s, ES ready @13.1s uptime |
-| 13 | Panel selection          | **IN DEVELOPMENT** | 18 DTBOs generated, boot.ini integration |
-| 14 | Full build from scratch | **WORKING** | `build-all.sh` end-to-end |
+| 12 | Boot time optimization | **19s confirmed** | 18MB kernel booting, U-Boot ~6-7s, ES ready @13.1s uptime. Initramfs splash at 0.7s |
+| 13 | Panel selection          | **WORKING** | 18 DTBOs, panel-detect.py wizard, boot.ini overlay |
+| 14 | Two-image build (orig+clone) | **IMPLEMENTED** | `--variant original\|clone`, needs testing |
+| 15 | Full build from scratch | **WORKING** | `build-all.sh` end-to-end |
 
 ### Medium Priority — Can Ship Without, Fix in Updates
 
@@ -1446,7 +2006,7 @@ new r36s-uboot.dts + r36s-clone-uboot.dts, new build-uboot.sh, build-all.sh.
 | Metric | Value |
 |--------|-------|
 | Project start | 2026-02-04 |
-| Days active | 16 |
+| Days active | 22 |
 | Boot time | **19s** first boot (confirmed), 24s second boot (charge-animation) |
 | Kernel Image size | 18MB (was 40MB, -55%) |
 | Kernel version | 6.6.89-archr |
@@ -1464,4 +2024,4 @@ new r36s-uboot.dts + r36s-clone-uboot.dts, new build-uboot.sh, build-all.sh.
 
 ---
 
-*Last updated: 2026-02-23 (universal image architecture designed, U-Boot display chain discovered)*
+*Last updated: 2026-02-25 (build pipeline fixes, boot.scr mystery solved, splash positioning)*

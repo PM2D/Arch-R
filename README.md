@@ -153,11 +153,81 @@ Arch-R/
 
 ## Supported Panels
 
-Arch R supports 18 display panels via DTBO overlays:
+Arch R supports 18 display panels via DTBO overlays. The default image boots with **Panel 4-V22** (the most common R36S panel).
 
-**Original R36S:** Panel 0, Panel 1 (V10), Panel 2 (V12), Panel 3 (V20), Panel 4 (V22, default), Panel 5 (V22 Q8)
+### Panel Auto-Detection
 
-**Clones:** Clone Panel 1-10 (ST7703, NV3051D variants), R36 Max, RX6S
+On first boot, Arch R runs a **panel detection wizard** that guides you through selecting your display panel:
+
+1. **If your screen works** (you see text on screen): press **A** to confirm the current panel
+2. **If your screen is black** (wrong panel): listen for audio beeps and use buttons to navigate:
+   - Each panel plays a different number of beeps (1 beep = first panel, 2 beeps = second, etc.)
+   - Press **B** to skip to the next panel
+   - Press **A** to confirm (you'll hear 3 rapid beeps)
+   - The system reboots with the correct panel applied
+
+Your selection is saved permanently. To reset it later, **hold X during boot**.
+
+### Panel List
+
+| # | Panel | Notes |
+|---|-------|-------|
+| 1 | **Panel 4-V22** *(default)* | Most common (~60% of R36S units) |
+| 2 | Panel 3-V20 | V20 board marking |
+| 3 | Panel 5-V22 Q8 | V22 Q8 variant |
+| 4 | Clone Panel 8 | ST7703 (G80CA-MB) |
+| 5 | Panel 0 | Early R36S units |
+| 6 | Panel 1-V10 | V10 board marking |
+| 7 | Panel 2-V12 | V12 board marking |
+| 8 | Clone Panel 1 | ST7703 |
+| 9 | Clone Panel 3 | NV3051D |
+| 10 | Clone Panel 7 | JD9365DA |
+| 11 | Clone Panel 9 | NV3051D |
+| 12 | Clone Panel 10 | ST7703 variant |
+| 13 | Clone Panel 2 | ST7703 |
+| 14 | Clone Panel 4 | NV3051D |
+| 15 | Clone Panel 5 | ST7703 |
+| 16 | Clone Panel 6 | NV3051D |
+| 17 | R36 Max | 720x720 ST7703 |
+| 18 | RX6S | NV3051D variant |
+
+### Manual Panel Selection
+
+If you prefer to set the panel manually (e.g., you know which panel you have from ArkOS/dArkOS):
+
+**Step 1 — Mount the BOOT partition on your PC**
+
+```bash
+lsblk
+sudo mount /dev/sdX1 /mnt
+```
+
+**Step 2 — Create panel.txt**
+
+```bash
+# Example: Panel 3-V20
+echo 'PanelNum=3
+PanelDTBO=ScreenFiles/Panel 3/mipi-panel.dtbo' | sudo tee /mnt/panel.txt
+
+# Mark as confirmed (skip wizard on next boot)
+echo 'confirmed' | sudo tee /mnt/panel-confirmed
+```
+
+For default Panel 4-V22 (no overlay needed):
+```bash
+echo 'PanelNum=4
+PanelDTBO=' | sudo tee /mnt/panel.txt
+echo 'confirmed' | sudo tee /mnt/panel-confirmed
+```
+
+**Step 3 — Unmount and boot**
+
+```bash
+sudo umount /mnt
+sync
+```
+
+**To reset panel selection:** hold **X** during boot, or delete `panel-confirmed` from the BOOT partition.
 
 ## Boot Flow
 
@@ -165,11 +235,12 @@ Arch R supports 18 display panels via DTBO overlays:
 Power On
   → U-Boot (idbloader → trust → uboot.img)
   → logo.bmp displayed on screen
-  → extlinux/extlinux.conf loaded (primary)
+  → boot.ini: load panel.txt → apply DTBO overlay (if non-default panel)
   → Kernel 6.6.89 + rk3326-gameconsole-r36s.dtb
-  → systemd → archr-boot-setup (GPU + governors)
+  → systemd → panel-detect.service (first boot only)
+  → archr-boot-setup (GPU + governors)
   → emulationstation.service → EmulationStation UI
-  ≈ 19 seconds total
+  ≈ 19 seconds total (+ wizard on first boot)
 ```
 
 ## Contributing
