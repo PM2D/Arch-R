@@ -475,64 +475,99 @@ for panel_name in "${CLONE_ORDER[@]}"; do
 done
 
 #------------------------------------------------------------------------------
-# Create ScreenFiles directory structure (for boot.ini panel auto-detect)
+# Pre-merge DTBs (overlay applied at build-time, not boot-time)
+#
+# This eliminates U-Boot's fdt apply at boot, which has known bugs in BSP
+# U-Boot (property replacement with different-sized data can corrupt the DTB).
+# Instead, fdtoverlay runs on the build host where it's verified to work.
 #------------------------------------------------------------------------------
 log ""
-log "Creating ScreenFiles directory structure..."
+log "=== Pre-merging Panel DTBs ==="
 
-SCREENFILES_DIR="$OUTPUT_DIR/ScreenFiles"
-rm -rf "$SCREENFILES_DIR"
+MERGED_DIR="$OUTPUT_DIR/merged"
+rm -rf "$MERGED_DIR"
+mkdir -p "$MERGED_DIR"
+
+# Check for fdtoverlay
+if ! command -v fdtoverlay &>/dev/null; then
+    error "fdtoverlay not found. Install with: sudo apt install device-tree-compiler"
+fi
+
+# Determine base DTBs (passed via --base-dtb-original and --base-dtb-clone, or auto-detect)
+BASE_DTB_ORIGINAL="${BASE_DTB_ORIGINAL:-$PROJECT_DIR/output/boot/rk3326-gameconsole-r36s.dtb}"
+BASE_DTB_CLONE="${BASE_DTB_CLONE:-$PROJECT_DIR/output/boot/rk3326-gameconsole-r36s-clone-type5.dtb}"
+
+MERGED_COUNT=0
 
 # R36S original panels (Panel 0-5)
-for panel_num in 0 1 2 3 4 5; do
-    dtbo_file="$OUTPUT_DIR/panel${panel_num}.dtbo"
-    if [ -f "$dtbo_file" ]; then
-        target_dir="$SCREENFILES_DIR/Panel ${panel_num}"
-        mkdir -p "$target_dir"
-        cp "$dtbo_file" "$target_dir/mipi-panel.dtbo"
-        log "  ScreenFiles/Panel ${panel_num}/mipi-panel.dtbo"
-    fi
-done
+if [ -f "$BASE_DTB_ORIGINAL" ]; then
+    log "Base DTB (original): $BASE_DTB_ORIGINAL"
+    for panel_num in 0 1 2 3 4 5; do
+        dtbo_file="$OUTPUT_DIR/panel${panel_num}.dtbo"
+        merged_file="$MERGED_DIR/kernel-panel${panel_num}.dtb"
+        if [ -f "$dtbo_file" ]; then
+            if fdtoverlay -i "$BASE_DTB_ORIGINAL" -o "$merged_file" "$dtbo_file" 2>/dev/null; then
+                log "  kernel-panel${panel_num}.dtb ($(stat -c%s "$merged_file") bytes)"
+                MERGED_COUNT=$((MERGED_COUNT + 1))
+            else
+                warn "  Failed to merge panel${panel_num}.dtbo"
+            fi
+        fi
+    done
+else
+    warn "Base DTB (original) not found: $BASE_DTB_ORIGINAL"
+fi
 
 # Clone panels
-for panel_name in "${CLONE_ORDER[@]}"; do
-    safe_name=$(echo "$panel_name" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
-    dtbo_file="$OUTPUT_DIR/${safe_name}.dtbo"
-    if [ -f "$dtbo_file" ]; then
-        target_dir="$SCREENFILES_DIR/${panel_name}"
-        mkdir -p "$target_dir"
-        cp "$dtbo_file" "$target_dir/mipi-panel.dtbo"
-        log "  ScreenFiles/${panel_name}/mipi-panel.dtbo"
-    fi
-done
+if [ -f "$BASE_DTB_CLONE" ]; then
+    log "Base DTB (clone): $BASE_DTB_CLONE"
+
+    # Map: panel_name -> merged DTB filename
+    declare -A CLONE_MERGED_NAME=(
+        ["Clone Panel 1"]="kernel-clone1.dtb"
+        ["Clone Panel 2"]="kernel-clone2.dtb"
+        ["Clone Panel 3"]="kernel-clone3.dtb"
+        ["Clone Panel 4"]="kernel-clone4.dtb"
+        ["Clone Panel 5"]="kernel-clone5.dtb"
+        ["Clone Panel 6"]="kernel-clone6.dtb"
+        ["Clone Panel 7"]="kernel-clone7.dtb"
+        ["Clone Panel 8"]="kernel-clone8.dtb"
+        ["Clone Panel 9"]="kernel-clone9.dtb"
+        ["Clone Panel 10"]="kernel-clone10.dtb"
+        ["R36 Max"]="kernel-r36max.dtb"
+        ["RX6S"]="kernel-rx6s.dtb"
+    )
+
+    for panel_name in "${CLONE_ORDER[@]}"; do
+        safe_name=$(echo "$panel_name" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+        dtbo_file="$OUTPUT_DIR/${safe_name}.dtbo"
+        merged_name="${CLONE_MERGED_NAME[$panel_name]}"
+        merged_file="$MERGED_DIR/$merged_name"
+        if [ -f "$dtbo_file" ]; then
+            if fdtoverlay -i "$BASE_DTB_CLONE" -o "$merged_file" "$dtbo_file" 2>/dev/null; then
+                log "  $merged_name ($(stat -c%s "$merged_file") bytes)"
+                MERGED_COUNT=$((MERGED_COUNT + 1))
+            else
+                warn "  Failed to merge ${safe_name}.dtbo"
+            fi
+        fi
+    done
+else
+    warn "Base DTB (clone) not found: $BASE_DTB_CLONE"
+fi
 
 #------------------------------------------------------------------------------
 # Summary
 #------------------------------------------------------------------------------
 log ""
-log "=== Panel DTBO Generation Complete ==="
-log "Generated: ${GENERATED} panels"
-[ $FAILED -gt 0 ] && warn "Failed: ${FAILED} panels"
+log "=== Panel Generation Complete ==="
+log "DTBOs generated: ${GENERATED}"
+log "Pre-merged DTBs: ${MERGED_COUNT}"
+[ $FAILED -gt 0 ] && warn "Failed: ${FAILED}"
 log ""
-log "Structure:"
-log "  output/panels/ScreenFiles/"
-log "  ├── Panel 0/mipi-panel.dtbo          (R36S original)"
-log "  ├── Panel 1/mipi-panel.dtbo          (R36S original)"
-log "  ├── Panel 2/mipi-panel.dtbo          (R36S original)"
-log "  ├── Panel 3/mipi-panel.dtbo          (R36S original)"
-log "  ├── Panel 4/mipi-panel.dtbo          (R36S Panel4-V22, default)"
-log "  ├── Panel 5/mipi-panel.dtbo          (R36S original)"
-log "  ├── Clone Panel 1/mipi-panel.dtbo    (ST7703)"
-log "  ├── Clone Panel 2/mipi-panel.dtbo    (ST7703)"
-log "  ├── Clone Panel 3/mipi-panel.dtbo    (NV3051D)"
-log "  ├── Clone Panel 4/mipi-panel.dtbo    (NV3051D)"
-log "  ├── Clone Panel 5/mipi-panel.dtbo    (ST7703)"
-log "  ├── Clone Panel 6/mipi-panel.dtbo    (NV3051D)"
-log "  ├── Clone Panel 7/mipi-panel.dtbo    (JD9365DA)"
-log "  ├── Clone Panel 8/mipi-panel.dtbo    (ST7703)"
-log "  ├── Clone Panel 9/mipi-panel.dtbo    (NV3051D)"
-log "  ├── Clone Panel 10/mipi-panel.dtbo   (ST7703 variant)"
-log "  ├── R36 Max/mipi-panel.dtbo          (ST7703 720x720)"
-log "  └── RX6S/mipi-panel.dtbo             (NV3051D)"
+log "Output: $MERGED_DIR/"
+ls -1 "$MERGED_DIR"/*.dtb 2>/dev/null | while read f; do
+    log "  $(basename "$f")"
+done
 log ""
-log "Copy to boot partition: cp -r output/panels/ScreenFiles /boot/"
+log "These pre-merged DTBs go on BOOT partition. boot.ini loads the selected one."

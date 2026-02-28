@@ -18,7 +18,7 @@ Flow:
   6. After 2 full cycles without confirm: auto-confirm default
 
 Panel selection is persistent:
-  - panel.txt: U-Boot reads PanelDTBO variable (overlay path)
+  - panel.txt: U-Boot reads PanelDTB variable (pre-merged DTB name)
   - panel-confirmed: marker file (>1 byte = confirmed, ≤1 byte = reset)
   - Hold X during boot to reset (U-Boot overwrites panel-confirmed with 1 byte)
 """
@@ -62,52 +62,35 @@ WAIT_PER_PANEL = 15    # seconds to wait for input per panel
 MAX_CYCLES = 2         # auto-confirm default after this many full cycles
 
 # --- Panel definitions per variant ---
-# (panel_num, dtbo_path, friendly_name)
-# Empty dtbo_path = default panel (hardcoded in base DTB, no overlay needed)
+# (panel_num, dtb_name, friendly_name)
+# Empty dtb_name = default panel (hardcoded in base DTB kernel.dtb, no overlay)
+# Non-empty dtb_name = pre-merged DTB with overlay applied at build-time
 # Order: most common first
 
 # R36S Original — 6 panels, default is Panel 4-V22 (~60% of units)
 PANELS_ORIGINAL = [
-    ("4",    "",
-     "Panel 4-V22 (Default)"),
-    ("3",    "ScreenFiles/Panel 3/mipi-panel.dtbo",
-     "Panel 3-V20"),
-    ("5",    "ScreenFiles/Panel 5/mipi-panel.dtbo",
-     "Panel 5-V22 Q8"),
-    ("0",    "ScreenFiles/Panel 0/mipi-panel.dtbo",
-     "Panel 0"),
-    ("1",    "ScreenFiles/Panel 1/mipi-panel.dtbo",
-     "Panel 1-V10"),
-    ("2",    "ScreenFiles/Panel 2/mipi-panel.dtbo",
-     "Panel 2-V12"),
+    ("4",    "",                    "Panel 4-V22 (Default)"),
+    ("3",    "kernel-panel3.dtb",   "Panel 3-V20"),
+    ("5",    "kernel-panel5.dtb",   "Panel 5-V22 Q8"),
+    ("0",    "kernel-panel0.dtb",   "Panel 0"),
+    ("1",    "kernel-panel1.dtb",   "Panel 1-V10"),
+    ("2",    "kernel-panel2.dtb",   "Panel 2-V12"),
 ]
 
 # R36S Clone — 12 panels, default is Clone 8 ST7703 (G80CA-MB)
 PANELS_CLONE = [
-    ("C8",   "",
-     "Clone 8 ST7703 G80CA (Default)"),
-    ("C1",   "ScreenFiles/Clone Panel 1/mipi-panel.dtbo",
-     "Clone 1 (ST7703)"),
-    ("C3",   "ScreenFiles/Clone Panel 3/mipi-panel.dtbo",
-     "Clone 3 (NV3051D)"),
-    ("C7",   "ScreenFiles/Clone Panel 7/mipi-panel.dtbo",
-     "Clone 7 (JD9365DA)"),
-    ("C9",   "ScreenFiles/Clone Panel 9/mipi-panel.dtbo",
-     "Clone 9 (NV3051D)"),
-    ("C10",  "ScreenFiles/Clone Panel 10/mipi-panel.dtbo",
-     "Clone 10 (ST7703)"),
-    ("C2",   "ScreenFiles/Clone Panel 2/mipi-panel.dtbo",
-     "Clone 2 (ST7703)"),
-    ("C4",   "ScreenFiles/Clone Panel 4/mipi-panel.dtbo",
-     "Clone 4 (NV3051D)"),
-    ("C5",   "ScreenFiles/Clone Panel 5/mipi-panel.dtbo",
-     "Clone 5 (ST7703)"),
-    ("C6",   "ScreenFiles/Clone Panel 6/mipi-panel.dtbo",
-     "Clone 6 (NV3051D)"),
-    ("MAX",  "ScreenFiles/R36 Max/mipi-panel.dtbo",
-     "R36 Max (720x720)"),
-    ("RX6S", "ScreenFiles/RX6S/mipi-panel.dtbo",
-     "RX6S (NV3051D)"),
+    ("C8",   "",                      "Clone 8 ST7703 G80CA (Default)"),
+    ("C1",   "kernel-clone1.dtb",     "Clone 1 (ST7703)"),
+    ("C3",   "kernel-clone3.dtb",     "Clone 3 (NV3051D)"),
+    ("C7",   "kernel-clone7.dtb",     "Clone 7 (JD9365DA)"),
+    ("C9",   "kernel-clone9.dtb",     "Clone 9 (NV3051D)"),
+    ("C10",  "kernel-clone10.dtb",    "Clone 10 (ST7703)"),
+    ("C2",   "kernel-clone2.dtb",     "Clone 2 (ST7703)"),
+    ("C4",   "kernel-clone4.dtb",     "Clone 4 (NV3051D)"),
+    ("C5",   "kernel-clone5.dtb",     "Clone 5 (ST7703)"),
+    ("C6",   "kernel-clone6.dtb",     "Clone 6 (NV3051D)"),
+    ("MAX",  "kernel-r36max.dtb",     "R36 Max (720x720)"),
+    ("RX6S", "kernel-rx6s.dtb",       "RX6S (NV3051D)"),
 ]
 
 
@@ -286,13 +269,13 @@ def fsync_write(path, data):
     os.close(dir_fd)
 
 
-def write_panel_config(panel_num, dtbo_path):
+def write_panel_config(panel_num, dtb_name):
     """Write panel.txt for U-Boot to load on next boot."""
     content = f"PanelNum={panel_num}\n"
-    if dtbo_path:
-        content += f"PanelDTBO={dtbo_path}\n"
+    if dtb_name:
+        content += f"PanelDTB={dtb_name}\n"
     else:
-        content += "PanelDTBO=\n"
+        content += "PanelDTB=\n"
     fsync_write(PANEL_TXT, content)
 
 
@@ -395,9 +378,9 @@ def main():
 
     # Panel selection loop
     for cycle in range(MAX_CYCLES):
-        for idx, (panel_num, dtbo_path, name) in enumerate(panels):
+        for idx, (panel_num, dtb_name, name) in enumerate(panels):
             # Write panel config (ready for confirm)
-            write_panel_config(panel_num, dtbo_path)
+            write_panel_config(panel_num, dtb_name)
 
             # Visual feedback on tty1
             position = f"[{idx + 1}/{len(panels)}]"
@@ -419,15 +402,15 @@ def main():
                 play_confirm_sound(confirm_beep)
                 confirm_panel()
                 subprocess.run(["sync"])
-                if dtbo_path:
-                    # Non-default panel: overlay applied by U-Boot on next reset
+                if dtb_name:
+                    # Non-default panel: pre-merged DTB loaded on next boot
                     write_tty(f"Confirmed: {name}\n\n  Press RESET to apply.")
                     print(f"  Non-default panel — waiting for RESET")
                     # Hold here until user presses RESET (no timeout)
                     while True:
                         time.sleep(60)
                 else:
-                    # Default panel: no overlay needed, continue booting
+                    # Default panel: kernel.dtb used, continue booting
                     write_tty(f"Confirmed: {name}")
                     print(f"  Default panel — continuing boot")
                     sys.exit(0)

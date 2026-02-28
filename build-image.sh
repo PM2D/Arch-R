@@ -266,40 +266,33 @@ cp "$ROOTFS_DIR/boot/Image" "$MOUNT_BOOT/"
 cp "$ROOTFS_DIR/boot/$KERNEL_DTB_NAME" "$MOUNT_BOOT/kernel.dtb"
 log "  kernel.dtb <- $KERNEL_DTB_NAME"
 
-# --- Boot partition: Panel DTBO overlays (variant-specific) ---
-PANELS_DIR="$OUTPUT_DIR/panels/ScreenFiles"
-if [ -d "$PANELS_DIR" ]; then
-    mkdir -p "$MOUNT_BOOT/ScreenFiles"
+# --- Generate pre-merged panel DTBs (overlay applied at build-time) ---
+# Runs generate-panel-dtbos.sh to create DTBOs + pre-merged DTBs in one step.
+log "  Generating panel DTBs..."
+"$SCRIPT_DIR/scripts/generate-panel-dtbos.sh"
+
+# --- Boot partition: Pre-merged panel DTBs ---
+# Each panel gets its own kernel-*.dtb with the overlay already merged.
+# No fdt apply needed at boot — U-Boot just loads the right DTB by name.
+MERGED_DIR="$OUTPUT_DIR/panels/merged"
+if [ -d "$MERGED_DIR" ]; then
     panel_count=0
 
-    # Copy variant-specific panels (explicit names — NO glob with spaces)
     if [ "$VARIANT" = "original" ]; then
-        # R36S original: Panel 0 through Panel 5
-        for i in 0 1 2 3 4 5; do
-            if [ -d "$PANELS_DIR/Panel $i" ]; then
-                cp -r "$PANELS_DIR/Panel $i" "$MOUNT_BOOT/ScreenFiles/"
-                panel_count=$((panel_count + 1))
-            fi
+        # R36S original: kernel-panel0.dtb through kernel-panel5.dtb
+        for dtb in "$MERGED_DIR"/kernel-panel*.dtb; do
+            [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
         done
     else
-        # R36S clone: Clone Panel 1 through Clone Panel 10 + extras
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-            if [ -d "$PANELS_DIR/Clone Panel $i" ]; then
-                cp -r "$PANELS_DIR/Clone Panel $i" "$MOUNT_BOOT/ScreenFiles/"
-                panel_count=$((panel_count + 1))
-            fi
-        done
-        for extra in "R36 Max" "RX6S"; do
-            if [ -d "$PANELS_DIR/$extra" ]; then
-                cp -r "$PANELS_DIR/$extra" "$MOUNT_BOOT/ScreenFiles/"
-                panel_count=$((panel_count + 1))
-            fi
+        # R36S clone: kernel-clone*.dtb + kernel-r36max.dtb + kernel-rx6s.dtb
+        for dtb in "$MERGED_DIR"/kernel-clone*.dtb "$MERGED_DIR"/kernel-r36max.dtb "$MERGED_DIR"/kernel-rx6s.dtb; do
+            [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
         done
     fi
 
-    log "  ScreenFiles: ${panel_count} panel overlays ($VARIANT)"
+    log "  Panel DTBs: ${panel_count} pre-merged ($VARIANT)"
 else
-    warn "Panel DTBOs not found! Run scripts/generate-panel-dtbos.sh first"
+    warn "Pre-merged panel DTBs not found! Run scripts/generate-panel-dtbos.sh first"
 fi
 
 # --- Boot partition: U-Boot display DTB ---
