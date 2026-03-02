@@ -153,7 +153,11 @@ Arch-R/
 
 ## Supported Panels
 
-Arch R supports 18 display panels via DTBO overlays. The default image boots with **Panel 4-V22** (the most common R36S panel).
+Arch R supports 18 display panels via pre-merged DTBs. Each panel variant has its own DTB file with the correct init sequence and timings applied at build-time.
+
+There are two separate images: **Original** (for genuine R36S) and **Clone** (for R36S clones like G80CA, K36, etc.). Each image has its own panel list.
+
+> **Note:** The numerical panel ordering below is available starting from **beta1.2**. Earlier versions may have a different order.
 
 ### Panel Auto-Detection
 
@@ -161,66 +165,81 @@ On first boot, Arch R runs a **panel detection wizard** that guides you through 
 
 1. **If your screen works** (you see text on screen): press **A** to confirm the current panel
 2. **If your screen is black** (wrong panel): listen for audio beeps and use buttons to navigate:
-   - Each panel plays a different number of beeps (1 beep = first panel, 2 beeps = second, etc.)
+   - Each panel plays a different number of beeps (Panel 0 = 1 beep, Panel 1 = 2 beeps, etc.)
    - Press **B** to skip to the next panel
    - Press **A** to confirm (you'll hear 3 rapid beeps)
    - The system reboots with the correct panel applied
 
 Your selection is saved permanently. To reset it later, **hold X during boot**.
 
-### Panel List
+### R36S Original (6 panels)
 
-| # | Panel | Notes |
-|---|-------|-------|
-| 1 | **Panel 4-V22** *(default)* | Most common (~60% of R36S units) |
-| 2 | Panel 3-V20 | V20 board marking |
-| 3 | Panel 5-V22 Q8 | V22 Q8 variant |
-| 4 | Clone Panel 8 | ST7703 (G80CA-MB) |
-| 5 | Panel 0 | Early R36S units |
-| 6 | Panel 1-V10 | V10 board marking |
-| 7 | Panel 2-V12 | V12 board marking |
-| 8 | Clone Panel 1 | ST7703 |
-| 9 | Clone Panel 3 | NV3051D |
-| 10 | Clone Panel 7 | JD9365DA |
-| 11 | Clone Panel 9 | NV3051D |
-| 12 | Clone Panel 10 | ST7703 variant |
-| 13 | Clone Panel 2 | ST7703 |
-| 14 | Clone Panel 4 | NV3051D |
-| 15 | Clone Panel 5 | ST7703 |
-| 16 | Clone Panel 6 | NV3051D |
-| 17 | R36 Max | 720x720 ST7703 |
-| 18 | RX6S | NV3051D variant |
+Default: **Panel 4-V22** (~60% of units)
+
+| Beeps | Panel | DTB | Notes |
+|-------|-------|-----|-------|
+| 1 | Panel 0 | kernel-panel0.dtb | Early R36S units |
+| 2 | Panel 1-V10 | kernel-panel1.dtb | V10 board marking |
+| 3 | Panel 2-V12 | kernel-panel2.dtb | V12 board marking |
+| 4 | Panel 3-V20 | kernel-panel3.dtb | V20 board marking |
+| 5 | **Panel 4-V22** *(default)* | kernel.dtb | Most common |
+| 6 | Panel 5-V22 Q8 | kernel-panel5.dtb | V22 Q8 variant |
+
+### R36S Clone (12 panels)
+
+Default: **Clone 8 ST7703 G80CA**
+
+| Beeps | Panel | DTB | Notes |
+|-------|-------|-----|-------|
+| 1 | Clone 1 | kernel-clone1.dtb | ST7703 |
+| 2 | Clone 2 | kernel-clone2.dtb | ST7703 |
+| 3 | Clone 3 | kernel-clone3.dtb | NV3051D |
+| 4 | Clone 4 | kernel-clone4.dtb | NV3051D |
+| 5 | Clone 5 | kernel-clone5.dtb | ST7703 |
+| 6 | Clone 6 | kernel-clone6.dtb | NV3051D |
+| 7 | Clone 7 | kernel-clone7.dtb | JD9365DA |
+| 8 | **Clone 8** *(default)* | kernel.dtb | ST7703 (G80CA-MB) |
+| 9 | Clone 9 | kernel-clone9.dtb | NV3051D |
+| 10 | Clone 10 | kernel-clone10.dtb | ST7703 variant |
+| 11 | R36 Max | kernel-r36max.dtb | 720x720 ST7703 |
+| 12 | RX6S | kernel-rx6s.dtb | NV3051D variant |
 
 ### Manual Panel Selection
 
 If you prefer to set the panel manually (e.g., you know which panel you have from ArkOS/dArkOS):
 
-**Step 1 — Mount the BOOT partition on your PC**
+**Step 1 -- Mount the BOOT partition on your PC**
 
 ```bash
 lsblk
 sudo mount /dev/sdX1 /mnt
 ```
 
-**Step 2 — Create panel.txt**
+**Step 2 -- Create panel.txt**
 
 ```bash
-# Example: Panel 3-V20
+# Example: Panel 3-V20 (original R36S)
 echo 'PanelNum=3
-PanelDTBO=ScreenFiles/Panel 3/mipi-panel.dtbo' | sudo tee /mnt/panel.txt
+PanelDTB=kernel-panel3.dtb' | sudo tee /mnt/panel.txt
 
 # Mark as confirmed (skip wizard on next boot)
 echo 'confirmed' | sudo tee /mnt/panel-confirmed
 ```
 
-For default Panel 4-V22 (no overlay needed):
+For default panels (no custom DTB needed):
 ```bash
+# Original R36S: Panel 4-V22 (default)
 echo 'PanelNum=4
-PanelDTBO=' | sudo tee /mnt/panel.txt
+PanelDTB=' | sudo tee /mnt/panel.txt
+
+# Clone R36S: Clone 8 G80CA (default)
+echo 'PanelNum=C8
+PanelDTB=' | sudo tee /mnt/panel.txt
+
 echo 'confirmed' | sudo tee /mnt/panel-confirmed
 ```
 
-**Step 3 — Unmount and boot**
+**Step 3 -- Unmount and boot**
 
 ```bash
 sudo umount /mnt
@@ -235,8 +254,8 @@ sync
 Power On
   → U-Boot (idbloader → trust → uboot.img)
   → logo.bmp displayed on screen
-  → boot.ini: load panel.txt → apply DTBO overlay (if non-default panel)
-  → Kernel 6.6.89 + rk3326-gameconsole-r36s.dtb
+  → boot.ini: load panel.txt → load pre-merged DTB (kernel-panelN.dtb)
+  → Kernel 6.6.89 + initramfs splash (0.7s)
   → systemd → panel-detect.service (first boot only)
   → archr-boot-setup (GPU + governors)
   → emulationstation.service → EmulationStation UI
