@@ -1915,6 +1915,59 @@ The panel wizard can only write config for the NEXT boot — no hot-swapping pan
 
 ---
 
+### 2026-02-27 — Pre-merged Panel DTBs (beta1.1)
+
+The biggest pain point since beta1 was panel selection. BSP U-Boot's `fdt apply` was silently
+corrupting DTBs whenever an overlay tried to replace a property with different-sized data — the
+init-sequence byte arrays vary per panel, so any non-default panel produced a broken DTB and a
+black screen.
+
+The fix was surprisingly clean: run `fdtoverlay` at **build time** instead of at boot time.
+`generate-panel-dtbos.sh` now pre-merges each panel overlay with the kernel DTB, producing
+`kernel-panel0.dtb` through `kernel-panel5.dtb` (original) and 12 clone variants. The boot
+script reads `PanelDTB=kernel-panel3.dtb` from `panel.txt` and loads the complete DTB directly —
+no `fdt apply` at all. Published as v1.0-beta1.1 and pushed to the community for testing.
+
+---
+
+### 2026-03-01 — Arch R Flasher & beta1.2
+
+Two things happened in parallel this week: the Flasher app was born, and the distro itself
+got some housekeeping.
+
+**Arch R Flasher — feature-complete.**
+
+Built the desktop flashing tool (Tauri 2 — Rust backend, vanilla HTML/CSS/JS frontend) that
+was "Plano C" in case pre-merged DTBs didn't fully work. Turns out having a proper Flasher is
+valuable regardless — it eliminates the dd-to-SD-card ceremony and lets users select their
+console type (Original vs Clone) and panel before flashing. The Flasher injects the correct
+kernel DTB, U-Boot, and panel config into the image at write time. Zero runtime detection needed.
+
+Feature set:
+- Console selection (Original: 6 panels, Clone: 12 panels)
+- Panel picker with defaults marked
+- In-app image download from GitHub Releases (with progress bar + SHA256 verification)
+- Local file picker (.img / .xz) with XZ decompression
+- SD card detection (Linux: sysfs, macOS: diskutil, Windows: PowerShell)
+- System disk protection (never lists /, /home, /boot disks)
+- Privileged flash (pkexec on Linux, osascript on macOS, UAC on Windows)
+- Real-time flash progress via dd monitoring
+- Post-flash eject (Linux + macOS)
+- Auto-update via tauri-plugin-updater + GitHub Releases (with minisign signing)
+- i18n: English, Portuguese, Spanish, Chinese
+- CI/CD: GitHub Actions builds for Linux (.deb/.rpm/.AppImage), macOS (.dmg), Windows (.msi/.exe)
+
+The Flasher lives at `archr-linux/archr-flasher` on GitHub. Still ironing out the CI signing
+(first build caught a Tauri 2 schema issue with `app.title` and 16-bit icon PNGs), but the
+code is feature-complete.
+
+**beta1.2 image changes:**
+
+Published new images with accumulated fixes since beta1.1. Nothing dramatic — mostly polish
+and small fixes that came out of Flasher development and continued testing.
+
+---
+
 ## What's Left for v1.0 Stable
 
 ### Critical — Must Work Before Release
@@ -1950,7 +2003,7 @@ The panel wizard can only write config for the NEXT boot — no hot-swapping pan
 | 15 | Bluetooth pairing | Not tested | bluez installed |
 | 16 | Battery LED indicator | Installed | Python service, needs hardware test |
 | 17 | Sleep/wake | Not implemented | PMIC sleep pinctrl in DTS |
-| 18 | OTA updates | Not implemented | Future feature |
+| 18 | OTA updates | Not implemented | Future feature (Flasher has self-update) |
 | 19 | Theme customization | Default only | ES-fcamod default theme |
 | 20 | Headphone detection | Not tested | archr-hotkeys.py ALSA switch |
 
