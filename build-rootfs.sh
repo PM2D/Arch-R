@@ -123,15 +123,19 @@ log "  ✓ Pacman CheckSpace disabled (QEMU chroot compatibility)"
 
 # Add multiple fallback mirrors (default mirror often has stale/404 packages)
 cat > "$ROOTFS_DIR/etc/pacman.d/mirrorlist" << 'MIRRORS_EOF'
-# Arch Linux ARM mirrors - multiple fallbacks for reliability
-Server = http://de.mirror.archlinuxarm.org/$arch/$repo
-Server = http://eu.mirror.archlinuxarm.org/$arch/$repo
-Server = http://dk.mirror.archlinuxarm.org/$arch/$repo
-Server = http://de3.mirror.archlinuxarm.org/$arch/$repo
-Server = http://hu.mirror.archlinuxarm.org/$arch/$repo
-Server = http://mirror.archlinuxarm.org/$arch/$repo
+# Arch Linux ARM mirrors - all official mirrors, Americas first
 Server = http://fl.us.mirror.archlinuxarm.org/$arch/$repo
 Server = http://nj.us.mirror.archlinuxarm.org/$arch/$repo
+Server = http://ca.us.mirror.archlinuxarm.org/$arch/$repo
+Server = http://de.mirror.archlinuxarm.org/$arch/$repo
+Server = http://de4.mirror.archlinuxarm.org/$arch/$repo
+Server = http://dk.mirror.archlinuxarm.org/$arch/$repo
+Server = http://hu.mirror.archlinuxarm.org/$arch/$repo
+Server = http://gr.mirror.archlinuxarm.org/$arch/$repo
+Server = http://de3.mirror.archlinuxarm.org/$arch/$repo
+Server = http://tw.mirror.archlinuxarm.org/$arch/$repo
+Server = http://tw2.mirror.archlinuxarm.org/$arch/$repo
+Server = http://mirror.archlinuxarm.org/$arch/$repo
 MIRRORS_EOF
 log "  ✓ Multiple ALARM mirrors configured (fallback for 404s)"
 
@@ -367,6 +371,27 @@ WantedBy=multi-user.target
 FB_EOF
 
 systemctl enable firstboot
+
+# Variant sync: copies variant marker from BOOT → /etc/archr/variant
+# Only runs if /etc/archr/variant doesn't exist yet (no-panel images flashed by Flasher)
+cat > /etc/systemd/system/archr-variant-sync.service << 'VARSYNC_EOF'
+[Unit]
+Description=Sync variant from BOOT partition
+After=local-fs.target
+Before=panel-detect.service
+RequiresMountsFor=/boot
+ConditionPathExists=!/etc/archr/variant
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'test -f /boot/variant && mkdir -p /etc/archr && cp /boot/variant /etc/archr/variant'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+VARSYNC_EOF
+
+systemctl enable archr-variant-sync
 
 # Panel auto-detect wizard (first boot / X-button reset)
 cat > /etc/systemd/system/panel-detect.service << 'PANELDET_EOF'

@@ -287,15 +287,20 @@ if [ -d "$MERGED_DIR" ]; then
 
     if [ "$VARIANT" = "no-panel" ]; then
         # Universal: include ALL panel DTBs (original + clone)
+        # Every panel has its own native DTB — no base/inherited DTBs.
         for dtb in "$MERGED_DIR"/kernel-panel*.dtb "$MERGED_DIR"/kernel-clone*.dtb \
                    "$MERGED_DIR"/kernel-r36max.dtb "$MERGED_DIR"/kernel-rx6s.dtb; do
             [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
         done
-        # Also copy named base DTBs (for Flasher to use as defaults)
+        # Default panels: copy base DTBs with their panel number names
+        # Panel 4-V22 (original default) → kernel-panel4.dtb
         [ -f "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" ] && \
-            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" "$MOUNT_BOOT/kernel-original.dtb"
+            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" "$MOUNT_BOOT/kernel-panel4.dtb" && \
+            panel_count=$((panel_count + 1))
+        # Clone 8 G80CA (clone default) → kernel-clone8.dtb
         [ -f "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s-clone-type5.dtb" ] && \
-            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s-clone-type5.dtb" "$MOUNT_BOOT/kernel-clone.dtb"
+            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s-clone-type5.dtb" "$MOUNT_BOOT/kernel-clone8.dtb" && \
+            panel_count=$((panel_count + 1))
     elif [ "$VARIANT" = "original" ]; then
         # R36S original: kernel-panel0.dtb through kernel-panel5.dtb
         for dtb in "$MERGED_DIR"/kernel-panel*.dtb; do
