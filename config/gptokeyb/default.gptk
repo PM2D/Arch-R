@@ -1,0 +1,36 @@
+# Arch R — Default gamepad-to-keyboard mapping
+# Used by archr-gptokeyb for Linux ports that need keyboard input.
+# Per-game overrides: /etc/archr/gptokeyb/<game>.gptk
+# Format: button_name = key_name (compatible with ROCKNIX .gptk)
+
+# Action buttons
+a = space
+b = backspace
+x = c
+y = v
+
+# Shoulder buttons
+l1 = a
+r1 = s
+l2 = q
+r2 = e
+
+# Menu
+back = esc
+start = enter
+guide = f1
+
+# D-pad
+up = up
+down = down
+left = left
+right = right
+
+# Left analog → mouse movement
+left_analog_as_mouse = true
+
+# Right analog → arrow keys
+right_analog_up = up
+right_analog_down = down
+right_analog_left = left
+right_analog_right = right

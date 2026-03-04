@@ -1,0 +1,20 @@
+# Arch R — Gamepad mapping for system tools (menus)
+# D-pad navigates, A=select, B=back, Start=select, Back=back
+
+# D-pad → arrow keys for menu navigation
+up = up
+down = down
+left = left
+right = right
+
+# A button → Enter (select/confirm)
+a = enter
+
+# B button → Escape (back/cancel)
+b = escape
+
+# Start → Enter (alternate confirm)
+start = enter
+
+# Back/Select → Escape (alternate back)
+back = escape
