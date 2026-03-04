@@ -129,6 +129,14 @@ log "✓ Prerequisites OK"
 START_TIME=$(date +%s)
 
 if [ "$BUILD_KERNEL" = true ]; then
+    # Initramfs must be built BEFORE kernel — kernel embeds it at compile time
+    log ""
+    log "═══════════════════════════════════════════════════════════════"
+    log "                   BUILDING INITRAMFS"
+    log "═══════════════════════════════════════════════════════════════"
+    chmod +x "$SCRIPT_DIR/build-initramfs.sh"
+    "$SCRIPT_DIR/build-initramfs.sh"
+
     log ""
     log "═══════════════════════════════════════════════════════════════"
     log "                    BUILDING KERNEL"
@@ -184,7 +192,7 @@ log "═════════════════════════
 chmod +x "$SCRIPT_DIR/scripts/generate-panel-dtbos.sh"
 "$SCRIPT_DIR/scripts/generate-panel-dtbos.sh"
 
-# Build custom U-Boot (optional — requires arm-linux-gnueabihf toolchain)
+# Build U-Boot BSP (requires aarch64 cross-compiler)
 if [ "$BUILD_UBOOT" = true ] && [ -f "$SCRIPT_DIR/build-uboot.sh" ]; then
     if command -v aarch64-linux-gnu-gcc &>/dev/null; then
         log ""
@@ -213,12 +221,6 @@ if [ "$BUILD_IMAGE" = true ]; then
     log "                 BUILDING IMAGE (clone)"
     log "═══════════════════════════════════════════════════════════════"
     "$SCRIPT_DIR/build-image.sh" --variant clone
-
-    log ""
-    log "═══════════════════════════════════════════════════════════════"
-    log "                 BUILDING IMAGE (no-panel)"
-    log "═══════════════════════════════════════════════════════════════"
-    "$SCRIPT_DIR/build-image.sh" --variant no-panel
 fi
 
 #------------------------------------------------------------------------------

@@ -3,6 +3,20 @@ output/
 
 # Kernel and bootloader source (cloned during build)
 kernel/src/
+
+# Kernel module build artifacts (compiled .ko/.o are not source)
+kernel/drivers/**/*.o
+kernel/drivers/**/*.ko
+kernel/drivers/**/*.mod
+kernel/drivers/**/*.mod.c
+kernel/drivers/**/*.mod.o
+kernel/drivers/**/*.cmd
+kernel/drivers/**/Module.symvers
+kernel/drivers/**/modules.order
+kernel/drivers/**/.module-common.o
+
+# Compiled DTBs in source tree (use output/boot/dtbs/ instead)
+kernel/dts/*.dtb
 bootloader/src/
 
 # Build cache

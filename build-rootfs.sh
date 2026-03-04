@@ -123,10 +123,11 @@ log "  ✓ Pacman CheckSpace disabled (QEMU chroot compatibility)"
 
 # Add multiple fallback mirrors (default mirror often has stale/404 packages)
 cat > "$ROOTFS_DIR/etc/pacman.d/mirrorlist" << 'MIRRORS_EOF'
-# Arch Linux ARM mirrors - all official mirrors, Americas first
+# Arch Linux ARM mirrors - all official, Americas first
 Server = http://fl.us.mirror.archlinuxarm.org/$arch/$repo
 Server = http://nj.us.mirror.archlinuxarm.org/$arch/$repo
 Server = http://ca.us.mirror.archlinuxarm.org/$arch/$repo
+Server = http://eu.mirror.archlinuxarm.org/$arch/$repo
 Server = http://de.mirror.archlinuxarm.org/$arch/$repo
 Server = http://de4.mirror.archlinuxarm.org/$arch/$repo
 Server = http://dk.mirror.archlinuxarm.org/$arch/$repo
@@ -294,34 +295,33 @@ kernel.sched_latency_ns=1000000
 kernel.sched_min_granularity_ns=500000
 SYSCTL_EOF
 
-# ZRAM swap — via timer, NOT in multi-user.target!
-# Type=oneshot + WantedBy=multi-user.target means systemd WAITS for mkswap to finish
-# before reaching multi-user.target. This adds 2.4s to boot critical path.
-# Fix: use a timer that fires at boot+15s (ES is already running by then).
-cat > /etc/systemd/system/zram-swap.service << 'ZRAM_EOF'
+# Memory manager — ZRAM swap with delayed start (15s after boot)
+# Timer avoids blocking multi-user.target (ES is already running by then)
+cat > /etc/systemd/system/archr-memory-manager.service << 'MEM_SVC'
 [Unit]
-Description=ZRAM Swap
+Description=Arch R Memory Manager
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'modprobe zram num_devices=1 2>/dev/null; echo lzo > /sys/block/zram0/comp_algorithm; echo 134217728 > /sys/block/zram0/disksize && mkswap /dev/zram0 && swapon -p 100 /dev/zram0'
-ExecStop=/bin/bash -c 'swapoff /dev/zram0 2>/dev/null; echo 1 > /sys/block/zram0/reset 2>/dev/null'
-ZRAM_EOF
+ExecStart=/usr/local/bin/archr-memory-manager setup
+ExecStop=/usr/local/bin/archr-memory-manager stop
+ExecReload=/usr/local/bin/archr-memory-manager reload
+MEM_SVC
 
-cat > /etc/systemd/system/zram-swap.timer << 'ZRAM_TIMER'
+cat > /etc/systemd/system/archr-memory-manager.timer << 'MEM_TIMER'
 [Unit]
-Description=Delayed ZRAM Swap Setup
+Description=Delayed Memory Manager Setup
 
 [Timer]
 OnBootSec=15s
-Unit=zram-swap.service
+Unit=archr-memory-manager.service
 
 [Install]
 WantedBy=timers.target
-ZRAM_TIMER
+MEM_TIMER
 
-systemctl enable zram-swap.timer
+systemctl enable archr-memory-manager.timer
 
 # Create directories
 mkdir -p /home/archr/.config/retroarch/cores
@@ -378,7 +378,6 @@ cat > /etc/systemd/system/archr-variant-sync.service << 'VARSYNC_EOF'
 [Unit]
 Description=Sync variant from BOOT partition
 After=local-fs.target
-Before=panel-detect.service
 RequiresMountsFor=/boot
 ConditionPathExists=!/etc/archr/variant
 
@@ -392,25 +391,6 @@ WantedBy=multi-user.target
 VARSYNC_EOF
 
 systemctl enable archr-variant-sync
-
-# Panel auto-detect wizard (first boot / X-button reset)
-cat > /etc/systemd/system/panel-detect.service << 'PANELDET_EOF'
-[Unit]
-Description=Arch R Panel Detection Wizard
-After=local-fs.target
-Before=emulationstation.service
-RequiresMountsFor=/boot
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/panel-detect.py
-TimeoutStartSec=600
-
-[Install]
-WantedBy=multi-user.target
-PANELDET_EOF
-
-systemctl enable panel-detect
 
 # EmulationStation launch — PRIMARY: systemd service (created by build-emulationstation.sh)
 # FALLBACK: autologin + .bash_profile (if ES service not installed)
@@ -531,6 +511,127 @@ TIMING_EOF
 
 systemctl enable boot-timing
 
+# Debug dump: comprehensive system info to /boot/debug.log (readable from PC)
+cat > /etc/systemd/system/archr-debug-dump.service << 'DEBUG_EOF'
+[Unit]
+Description=Arch R Debug Dump
+After=emulationstation.service
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+    sleep 20; \
+    { \
+        echo "=== Arch R Debug Dump ($(date)) ==="; \
+        echo ""; \
+        echo "--- Kernel ---"; \
+        uname -a; \
+        echo ""; \
+        echo "--- Input Devices ---"; \
+        for d in /dev/input/event*; do \
+            name=$(cat /sys/class/input/$(basename $d)/device/name 2>/dev/null); \
+            echo "  $d: $name"; \
+        done; \
+        echo ""; \
+        echo "--- DRM ---"; \
+        for c in /sys/class/drm/card*/status; do \
+            echo "  $c: $(cat $c 2>/dev/null)"; \
+        done; \
+        cat /sys/class/drm/card*/modes 2>/dev/null | head -5; \
+        echo ""; \
+        echo "--- Backlight ---"; \
+        for bl in /sys/class/backlight/*/; do \
+            echo "  $(basename $bl): cur=$(cat ${bl}brightness 2>/dev/null) max=$(cat ${bl}max_brightness 2>/dev/null)"; \
+        done; \
+        echo ""; \
+        echo "--- ALSA Controls ---"; \
+        amixer scontrols 2>/dev/null || echo "  (no ALSA)"; \
+        echo ""; \
+        echo "--- CPU/GPU ---"; \
+        echo "  CPU: $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null)kHz ($(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null))"; \
+        echo "  GPU: $(cat /sys/devices/platform/ff400000.gpu/devfreq/ff400000.gpu/cur_freq 2>/dev/null)Hz"; \
+        echo "  Temp: $(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)"; \
+        echo ""; \
+        echo "--- Memory ---"; \
+        free -h; \
+        echo ""; \
+        echo "--- Loaded Modules ---"; \
+        lsmod 2>/dev/null | head -30; \
+        echo ""; \
+        echo "--- Failed Services ---"; \
+        systemctl --failed --no-pager 2>/dev/null; \
+        echo ""; \
+        echo "--- dmesg errors ---"; \
+        dmesg -l err,warn 2>/dev/null | tail -30; \
+    } > /boot/debug.log 2>&1; \
+    chmod 644 /boot/debug.log'
+
+[Install]
+WantedBy=multi-user.target
+DEBUG_EOF
+
+systemctl enable archr-debug-dump
+
+# USB auto-mount service (triggered by udev on device insertion)
+cat > /etc/systemd/system/archr-automount.service << 'AUTOMOUNT_SVC'
+[Unit]
+Description=Arch R USB Auto-Mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/archr-automount mount
+AUTOMOUNT_SVC
+
+# Save config on shutdown (backs up ALSA state, brightness, WiFi to /boot)
+cat > /etc/systemd/system/archr-save-config.service << 'SAVECONF_SVC'
+[Unit]
+Description=Arch R Save Config
+DefaultDependencies=no
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/archr-save-config backup
+
+[Install]
+WantedBy=shutdown.target
+SAVECONF_SVC
+
+systemctl enable archr-save-config
+
+# Bluetooth auto-pairing agent (runs alongside bluetoothd)
+cat > /etc/systemd/system/archr-bluetooth-agent.service << 'BTAGENT_SVC'
+[Unit]
+Description=Arch R Bluetooth Agent
+After=bluetooth.service
+PartOf=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/archr-bluetooth-agent
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=bluetooth.target
+BTAGENT_SVC
+
+systemctl enable archr-bluetooth-agent
+
+# Sleep configuration (suspend disabled by default, user enables via archr-suspend-mode)
+mkdir -p /etc/systemd/sleep.conf.d
+cat > /etc/systemd/sleep.conf.d/archr.conf << 'SLEEP_CONF'
+[Sleep]
+AllowSuspend=yes
+SuspendState=mem
+AllowHibernation=no
+SLEEP_CONF
+
+# Modules blacklist for sleep (unloaded before suspend by archr-sleep hook)
+mkdir -p /etc/archr
+install -m 644 /tmp/modules.bad /etc/archr/modules.bad 2>/dev/null || true
+
 # Delete stock ALARM initramfs and kernel (we use our own kernel + initramfs)
 # Our initramfs.img is built by build-image.sh and placed on BOOT partition
 rm -f /boot/initramfs-linux.img /boot/Image /boot/Image.gz 2>/dev/null
@@ -546,7 +647,7 @@ dd if=/dev/urandom of=/var/lib/systemd/random-seed bs=512 count=1 2>/dev/null
 chmod 600 /var/lib/systemd/random-seed
 
 # Sudoers for perfmax/perfnorm/pmic-poweroff (allow archr to run without password)
-echo "archr ALL=(ALL) NOPASSWD: /usr/local/bin/perfmax, /usr/local/bin/perfnorm, /usr/local/bin/pmic-poweroff, /usr/local/bin/input-merge, /usr/bin/kill, /usr/bin/ln, /usr/bin/dmesg, /usr/bin/chvt, /usr/bin/cp, /usr/bin/chmod, /bin/bash" > /etc/sudoers.d/archr-perf
+echo "archr ALL=(ALL) NOPASSWD: /usr/local/bin/perfmax, /usr/local/bin/perfnorm, /usr/local/bin/pmic-poweroff, /usr/local/bin/input-merge, /usr/local/bin/archr-gptokeyb, /usr/local/bin/archr-factory-reset, /usr/local/bin/archr-suspend-mode, /usr/local/bin/archr-usbgadget, /usr/bin/kill, /usr/bin/ln, /usr/bin/dmesg, /usr/bin/chvt, /usr/bin/cp, /usr/bin/chmod, /usr/bin/tee, /usr/bin/systemctl, /bin/bash" > /etc/sudoers.d/archr-perf
 chmod 440 /etc/sudoers.d/archr-perf
 
 # Allow archr to use negative nice values (needed for nice -n -19 in ES launch commands)
@@ -597,8 +698,8 @@ cat > /etc/systemd/logind.conf.d/fast.conf << 'LOGIND_EOF'
 [Login]
 NAutoVTs=1
 ReserveVT=0
-HandlePowerKey=ignore
-HandleSuspendKey=ignore
+HandlePowerKey=suspend
+HandleSuspendKey=suspend
 HandleHibernateKey=ignore
 HandleLidSwitch=ignore
 KillUserProcesses=no
@@ -694,6 +795,7 @@ for sock in \
     systemd-mute-console.socket systemd-bootctl.socket \
     systemd-creds.socket systemd-repart.socket \
     systemd-importd.socket systemd-machined.socket \
+    systemd-hostnamed.socket \
     systemd-rfkill.socket dm-event.socket \
     systemd-coredump.socket systemd-sysext.socket \
     systemd-ask-password-wall.socket \
@@ -720,6 +822,9 @@ for rule in 60-cdrom_id 60-dmi-id 60-fido-id 60-infiniband \
     96-e2scrub 50-mali 10-dm 13-dm-disk 95-dm-notify; do
     ln -sf /dev/null "/etc/udev/rules.d/${rule}.rules"
 done
+
+# Allow input group to use /dev/uinput (needed by archr-gptokeyb and input-merge)
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' > /etc/udev/rules.d/99-archr-uinput.rules
 
 # Pre-build caches NOW (inside chroot) so masks are safe
 ldconfig 2>/dev/null || true
@@ -960,6 +1065,9 @@ chmod +x "$ROOTFS_DIR/tmp/setup.sh"
 # Copy libvlc stub into chroot (needed by bloat cleanup — ES links against libvlc.so.5)
 cp "$SCRIPT_DIR/scripts/libvlc-stub-aarch64.so" "$ROOTFS_DIR/tmp/libvlc-stub.so"
 
+# Copy modules.bad into chroot (installed by setup.sh to /etc/archr/)
+cp "$SCRIPT_DIR/config/modules.bad" "$ROOTFS_DIR/tmp/modules.bad"
+
 # Run setup inside chroot
 log "  Running setup inside chroot..."
 chroot "$ROOTFS_DIR" /tmp/setup.sh
@@ -977,7 +1085,7 @@ install -m 755 "$SCRIPT_DIR/scripts/perfmax" "$ROOTFS_DIR/usr/local/bin/perfmax"
 install -m 755 "$SCRIPT_DIR/scripts/perfnorm" "$ROOTFS_DIR/usr/local/bin/perfnorm"
 install -m 755 "$SCRIPT_DIR/scripts/pmic-poweroff" "$ROOTFS_DIR/usr/local/bin/pmic-poweroff"
 install -m 755 "$SCRIPT_DIR/scripts/retroarch-launch.sh" "$ROOTFS_DIR/usr/local/bin/retroarch-launch"
-# RetroArch core options (per-core tuning for RK3326, from ROCKNIX)
+# RetroArch core options (per-core tuning for RK3326)
 install -m 644 "$SCRIPT_DIR/config/retroarch-core-options.cfg" "$ROOTFS_DIR/home/archr/.config/retroarch/retroarch-core-options.cfg"
 log "  ✓ RetroArch core options installed"
 # Input merger daemon: combines gpio-keys + adc-joystick into single virtual device
@@ -987,9 +1095,19 @@ if command -v aarch64-linux-gnu-gcc &>/dev/null; then
         "$SCRIPT_DIR/scripts/input-merge.c"
     chmod 755 "$ROOTFS_DIR/usr/local/bin/input-merge"
     log "  ✓ input-merge compiled and installed"
+    # Gamepad-to-keyboard mapper for Linux ports (compatible with ROCKNIX .gptk configs)
+    aarch64-linux-gnu-gcc -static -O2 -o "$ROOTFS_DIR/usr/local/bin/archr-gptokeyb" \
+        "$SCRIPT_DIR/scripts/archr-gptokeyb.c"
+    chmod 755 "$ROOTFS_DIR/usr/local/bin/archr-gptokeyb"
+    log "  ✓ archr-gptokeyb compiled and installed"
 else
-    warn "aarch64-linux-gnu-gcc not found — input-merge not compiled"
+    warn "aarch64-linux-gnu-gcc not found — input-merge/gptokeyb not compiled"
 fi
+# gptokeyb config files
+mkdir -p "$ROOTFS_DIR/etc/archr/gptokeyb"
+install -m 644 "$SCRIPT_DIR/config/gptokeyb/default.gptk" "$ROOTFS_DIR/etc/archr/gptokeyb/default.gptk"
+install -m 644 "$SCRIPT_DIR/config/gptokeyb/tools.gptk" "$ROOTFS_DIR/etc/archr/gptokeyb/tools.gptk"
+log "  ✓ gptokeyb configs installed (default + tools)"
 # RetroArch joypad autoconfig (merged device + individual fallbacks)
 mkdir -p "$ROOTFS_DIR/usr/share/retroarch/autoconfig/udev"
 install -m 644 "$SCRIPT_DIR/config/autoconfig/udev/archr-gamepad.cfg" "$ROOTFS_DIR/usr/share/retroarch/autoconfig/udev/"
@@ -1010,6 +1128,40 @@ log "  ✓ ES info bar scripts installed (current_volume, current_brightness)"
 install -m 755 "$SCRIPT_DIR/scripts/timezones" "$ROOTFS_DIR/usr/local/bin/timezones"
 install -m 755 "$SCRIPT_DIR/scripts/auto_suspend_update.sh" "$ROOTFS_DIR/usr/local/bin/auto_suspend_update.sh"
 log "  ✓ ES compatibility scripts installed (timezones, auto_suspend_update.sh)"
+
+# System management scripts
+install -m 755 "$SCRIPT_DIR/scripts/archr-automount" "$ROOTFS_DIR/usr/local/bin/archr-automount"
+install -m 755 "$SCRIPT_DIR/scripts/archr-usbgadget" "$ROOTFS_DIR/usr/local/bin/archr-usbgadget"
+install -m 755 "$SCRIPT_DIR/scripts/archr-bluetooth-agent" "$ROOTFS_DIR/usr/local/bin/archr-bluetooth-agent"
+install -m 755 "$SCRIPT_DIR/scripts/archr-factory-reset" "$ROOTFS_DIR/usr/local/bin/archr-factory-reset"
+install -m 755 "$SCRIPT_DIR/scripts/archr-suspend-mode" "$ROOTFS_DIR/usr/local/bin/archr-suspend-mode"
+install -m 755 "$SCRIPT_DIR/scripts/archr-save-config" "$ROOTFS_DIR/usr/local/bin/archr-save-config"
+install -m 755 "$SCRIPT_DIR/scripts/archr-memory-manager" "$ROOTFS_DIR/usr/local/bin/archr-memory-manager"
+log "  ✓ System management scripts installed"
+
+# System sleep hook (called by systemd on suspend/resume)
+mkdir -p "$ROOTFS_DIR/usr/lib/systemd/system-sleep"
+install -m 755 "$SCRIPT_DIR/scripts/archr-sleep" "$ROOTFS_DIR/usr/lib/systemd/system-sleep/archr-sleep"
+log "  ✓ Sleep hook installed"
+
+# ES Tools shared menu library (sourced by tool scripts)
+mkdir -p "$ROOTFS_DIR/usr/lib/archr"
+install -m 644 "$SCRIPT_DIR/scripts/opt-system/menu-lib.sh" "$ROOTFS_DIR/usr/lib/archr/menu-lib.sh"
+
+# ES Tools menu scripts (shown in ES OPTIONS menu via GuiTools)
+mkdir -p "$ROOTFS_DIR/opt/system"
+for script in "$SCRIPT_DIR/scripts/opt-system/"*.sh; do
+    [ -f "$script" ] || continue
+    [ "$(basename "$script")" = "menu-lib.sh" ] && continue
+    install -m 755 "$script" "$ROOTFS_DIR/opt/system/$(basename "$script")"
+done
+log "  ✓ ES Tools menu scripts installed (/opt/system/)"
+
+# Udev rules
+mkdir -p "$ROOTFS_DIR/etc/udev/rules.d"
+install -m 644 "$SCRIPT_DIR/config/udev/99-archr-automount.rules" "$ROOTFS_DIR/etc/udev/rules.d/99-archr-automount.rules"
+install -m 644 "$SCRIPT_DIR/config/udev/80-archr-usbgadget.rules" "$ROOTFS_DIR/etc/udev/rules.d/80-archr-usbgadget.rules"
+log "  ✓ Udev rules installed (automount, usbgadget)"
 
 # Install prebuilt libretro cores (not available in ALARM repos)
 PREBUILT_CORES="$SCRIPT_DIR/prebuilt/cores"
@@ -1033,10 +1185,6 @@ log "  ✓ First boot script installed"
 
 # Boot splash: no binary needed in rootfs — splash is embedded in initramfs /init
 # (built by build-image.sh: archr-init.c + embedded splash BMP → initramfs.img)
-
-# Panel detection wizard
-install -m 755 "$SCRIPT_DIR/scripts/panel-detect.py" "$ROOTFS_DIR/usr/local/bin/panel-detect.py"
-log "  ✓ Panel detection wizard installed"
 
 # RetroArch config (install to user's config dir where retroarch expects it)
 mkdir -p "$ROOTFS_DIR/home/archr/.config/retroarch"
@@ -1069,6 +1217,9 @@ log "  ✓ Battery LED script installed"
 install -m 755 "$SCRIPT_DIR/scripts/archr-hotkeys.py" "$ROOTFS_DIR/usr/local/bin/archr-hotkeys.py"
 log "  ✓ Hotkey daemon installed"
 
+# Screenshots directory (used by MODE+B hotkey)
+mkdir -p "$ROOTFS_DIR/home/archr/screenshots"
+
 # Fix ownership of archr home directory (files installed by root in Step 5)
 chown -R 1001:1001 "$ROOTFS_DIR/home/archr"
 log "  ✓ archr home ownership fixed (UID 1001)"
@@ -1082,18 +1233,22 @@ log "Step 6: Installing kernel and modules..."
 KERNEL_BOOT="$OUTPUT_DIR/boot"
 KERNEL_MODULES="$OUTPUT_DIR/modules/lib/modules"
 
-if [ -f "$KERNEL_BOOT/Image" ]; then
+if [ -f "$KERNEL_BOOT/KERNEL" ]; then
     mkdir -p "$ROOTFS_DIR/boot"
-    cp "$KERNEL_BOOT/Image" "$ROOTFS_DIR/boot/"
-    log "  ✓ Kernel Image installed"
+    cp "$KERNEL_BOOT/KERNEL" "$ROOTFS_DIR/boot/"
+    log "  ✓ Kernel installed to rootfs/boot/"
 
-    # Copy R36S DTB
-    for dtb in "$KERNEL_BOOT"/*.dtb; do
-        [ -f "$dtb" ] && cp "$dtb" "$ROOTFS_DIR/boot/" && \
-            log "  ✓ DTB installed: $(basename "$dtb")"
-    done
+    # Copy board DTBs (build-image.sh handles BOOT partition separately)
+    if [ -d "$KERNEL_BOOT/dtbs" ]; then
+        mkdir -p "$ROOTFS_DIR/boot/dtbs"
+        for dtb in "$KERNEL_BOOT/dtbs"/rk3326-*.dtb; do
+            [ -f "$dtb" ] && cp "$dtb" "$ROOTFS_DIR/boot/dtbs/"
+        done
+        dtb_count=$(ls "$ROOTFS_DIR/boot/dtbs"/rk3326-*.dtb 2>/dev/null | wc -l)
+        log "  ✓ $dtb_count DTBs installed to rootfs/boot/dtbs/"
+    fi
 else
-    warn "Kernel Image not found. Run build-kernel.sh first!"
+    warn "Kernel not found at $KERNEL_BOOT/KERNEL. Run build-kernel.sh first!"
 fi
 
 if [ -d "$KERNEL_MODULES" ]; then

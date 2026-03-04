@@ -2,7 +2,7 @@
 #==============================================================================
 # Arch R - Build Mainline U-Boot for R36S Clones
 #==============================================================================
-# Uses mainline U-Boot v2025.10 + ROCKNIX patches
+# Uses mainline U-Boot v2025.10 + RK3326 handheld patches
 # Produces: idbloader.img, uboot.img, trust.img (Rockchip format)
 #
 # Usage:

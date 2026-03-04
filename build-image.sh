@@ -3,13 +3,18 @@
 #==============================================================================
 # Arch R - SD Card Image Builder
 #==============================================================================
-# Creates a flashable SD card image for R36S
+# Creates a flashable SD card image for Arch R.
+#
+# BOOT partition layout:
+#   /KERNEL                      ← kernel Image
+#   /boot.ini                    ← boot script (BSP reads directly, hwrev→DTB)
+#   /dtbs/rk3326-*.dtb           ← ALL board DTBs (selected by boot.ini hwrev mapping)
+#   /overlays/*.dtbo             ← all available panel overlays (no default — Flasher selects)
 #
 # Usage:
-#   sudo ./build-image.sh --variant original   # R36S original
-#   sudo ./build-image.sh --variant clone       # R36S clone (G80CA-MB etc)
-#   sudo ./build-image.sh --variant no-panel    # Universal (all panels, for Flasher)
-#   sudo ./build-image.sh                       # defaults to original
+#   sudo ./build-image.sh --variant original   # Original R36S, OGA, OGS, RG351, etc.
+#   sudo ./build-image.sh --variant clone      # K36 clones, RGB20S, RGB10X, etc.
+#   sudo ./build-image.sh                      # defaults to original
 #==============================================================================
 
 set -e
@@ -38,13 +43,13 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            error "Unknown option: $1\nUsage: $0 --variant original|clone|no-panel"
+            error "Unknown option: $1\nUsage: $0 --variant original|clone"
             ;;
     esac
 done
 
-if [ "$VARIANT" != "original" ] && [ "$VARIANT" != "clone" ] && [ "$VARIANT" != "no-panel" ]; then
-    error "Invalid variant: $VARIANT (must be 'original', 'clone', or 'no-panel')"
+if [ "$VARIANT" != "original" ] && [ "$VARIANT" != "clone" ]; then
+    error "Invalid variant: $VARIANT (must be 'original' or 'clone')"
 fi
 
 #------------------------------------------------------------------------------
@@ -52,55 +57,26 @@ fi
 #------------------------------------------------------------------------------
 if [ "$VARIANT" = "original" ]; then
     IMAGE_SUFFIX="R36S"
-    KERNEL_DTB_NAME="rk3326-gameconsole-r36s.dtb"
-elif [ "$VARIANT" = "clone" ]; then
-    IMAGE_SUFFIX="R36S-clone"
-    KERNEL_DTB_NAME="rk3326-gameconsole-r36s-clone-type5.dtb"
-elif [ "$VARIANT" = "no-panel" ]; then
-    IMAGE_SUFFIX="R36S-no-panel"
-    KERNEL_DTB_NAME="rk3326-gameconsole-r36s.dtb"  # placeholder (Flasher replaces)
-fi
-
-# U-Boot binaries per variant:
-#   Original: BSP Rockchip U-Boot (custom build or pre-built)
-#   Clone:    Mainline U-Boot v2025.10 (custom build or pre-built)
-UBOOT_TYPE=""
-UBOOT_BSP_DIR="$SCRIPT_DIR/bootloader/u-boot-rk3326/sd_fuse"
-UBOOT_MAINLINE_DIR="$SCRIPT_DIR/bootloader/u-boot-clone-build"
-
-if [ "$VARIANT" = "no-panel" ] && [ -f "$UBOOT_MAINLINE_DIR/uboot.img" ]; then
-    # no-panel: mainline U-Boot works on both original and clone
-    UBOOT_BIN_DIR="$UBOOT_MAINLINE_DIR"
-    UBOOT_TYPE="mainline"
-    log "  U-Boot: mainline v2025.10 (no-panel universal)"
-elif [ "$VARIANT" = "clone" ] && [ -f "$UBOOT_MAINLINE_DIR/uboot.img" ]; then
-    UBOOT_BIN_DIR="$UBOOT_MAINLINE_DIR"
-    UBOOT_TYPE="mainline"
-    log "  U-Boot: mainline v2025.10 (clone)"
-elif [ "$VARIANT" = "original" ] && [ -f "$UBOOT_BSP_DIR/uboot.img" ]; then
-    UBOOT_BIN_DIR="$UBOOT_BSP_DIR"
-    UBOOT_TYPE="bsp"
-    log "  U-Boot: BSP custom build (original)"
-elif [ "$VARIANT" = "original" ]; then
-    UBOOT_BIN_DIR="$SCRIPT_DIR/bootloader/u-boot-r36s-working"
-    UBOOT_TYPE="bsp"
-    log "  U-Boot: BSP pre-built (original)"
+    BOOT_INI="$SCRIPT_DIR/config/a_boot.ini"
 else
-    UBOOT_BIN_DIR="$SCRIPT_DIR/bootloader/u-boot-clone-working"
-    UBOOT_TYPE="bsp"
-    log "  U-Boot: BSP pre-built (clone fallback)"
+    IMAGE_SUFFIX="R36S-clone"
+    BOOT_INI="$SCRIPT_DIR/config/b_boot.ini"
 fi
+
+# U-Boot binaries (same BSP build for both variants)
+UBOOT_BIN_DIR="$SCRIPT_DIR/bootloader/u-boot-rk3326/sd_fuse"
 
 #------------------------------------------------------------------------------
 # Configuration
 #------------------------------------------------------------------------------
-
 OUTPUT_DIR="$SCRIPT_DIR/output"
 ROOTFS_DIR="$OUTPUT_DIR/rootfs"
+BOOT_OUTPUT="$OUTPUT_DIR/boot"
+PANELS_DIR="$OUTPUT_DIR/panels"
 IMAGE_DIR="$OUTPUT_DIR/images"
 IMAGE_NAME="ArchR-${IMAGE_SUFFIX}-$(date +%Y%m%d).img"
 
-# CRITICAL: Always clean up loop devices and mounts on exit (success OR failure).
+# Cleanup on exit
 LOOP_DEV=""
 cleanup_image() {
     echo "[IMAGE] Cleaning up mounts and loop devices..."
@@ -113,11 +89,9 @@ trap cleanup_image EXIT
 IMAGE_FILE="$IMAGE_DIR/$IMAGE_NAME"
 
 # Partition sizes (in MB)
-BOOT_SIZE=128        # Boot partition (FAT32)
-ROOTFS_SIZE=6144     # Root filesystem (ext4) - 6GB for full Arch + gaming stack
-
-# Total image size
-IMAGE_SIZE=$((BOOT_SIZE + ROOTFS_SIZE + 32))  # +32MB for partition table
+BOOT_SIZE=128
+ROOTFS_SIZE=6144
+IMAGE_SIZE=$((BOOT_SIZE + ROOTFS_SIZE + 32))
 
 log "=== Arch R Image Builder (variant: $VARIANT) ==="
 
@@ -138,29 +112,44 @@ if [ ! -d "$ROOTFS_DIR" ]; then
     error "Rootfs not found at: $ROOTFS_DIR\nRun build-rootfs.sh first!"
 fi
 
-if [ ! -f "$ROOTFS_DIR/boot/Image" ]; then
-    warn "Kernel Image not found in rootfs. Make sure kernel is installed."
+# Kernel
+if [ ! -f "$BOOT_OUTPUT/KERNEL" ]; then
+    error "Kernel not found at: $BOOT_OUTPUT/KERNEL\nRun build-kernel.sh first!"
+fi
+KERNEL_BYTES=$(stat -c%s "$BOOT_OUTPUT/KERNEL")
+log "  KERNEL: $(($KERNEL_BYTES / 1024 / 1024))MB"
+
+# Board DTBs
+if [ ! -d "$BOOT_OUTPUT/dtbs" ]; then
+    error "DTBs not found at: $BOOT_OUTPUT/dtbs/\nRun build-kernel.sh first!"
+fi
+DTB_COUNT=$(ls "$BOOT_OUTPUT/dtbs"/rk3326-*.dtb 2>/dev/null | wc -l)
+log "  Board DTBs: $DTB_COUNT files"
+
+# Kernel modules in rootfs
+if [ ! -d "$ROOTFS_DIR/lib/modules" ] || [ -z "$(ls "$ROOTFS_DIR/lib/modules/" 2>/dev/null)" ]; then
+    warn "Kernel modules not found in rootfs! Run build-rootfs.sh after build-kernel.sh."
 else
-    IMAGE_BYTES=$(stat -c%s "$ROOTFS_DIR/boot/Image")
-    if [ "$IMAGE_BYTES" -lt 10000000 ]; then
-        error "Kernel Image is only $(($IMAGE_BYTES / 1024 / 1024))MB — expected ~18MB for kernel 6.6!"
+    log "  Kernel modules: OK"
+fi
+
+# Panel overlays (generate if missing)
+if [ ! -d "$PANELS_DIR" ] || [ -z "$(ls "$PANELS_DIR"/*.dtbo 2>/dev/null)" ]; then
+    log "  Panel overlays not found — generating..."
+    if [ -x "$SCRIPT_DIR/scripts/generate-panel-dtbos.sh" ]; then
+        "$SCRIPT_DIR/scripts/generate-panel-dtbos.sh"
+    else
+        warn "Panel overlays not found and generate-panel-dtbos.sh not executable!"
     fi
-    log "  Kernel Image: $(($IMAGE_BYTES / 1024 / 1024))MB (OK)"
 fi
 
-# Check variant-specific DTB
-if [ ! -f "$ROOTFS_DIR/boot/$KERNEL_DTB_NAME" ]; then
-    error "Kernel DTB not found: $ROOTFS_DIR/boot/$KERNEL_DTB_NAME\nRun build-kernel.sh first!"
-fi
-log "  DTB ($VARIANT): $KERNEL_DTB_NAME (OK)"
-
-# Check U-Boot binaries
+# U-Boot
 if [ ! -d "$UBOOT_BIN_DIR" ] || [ ! -f "$UBOOT_BIN_DIR/idbloader.img" ]; then
     error "U-Boot binaries not found at: $UBOOT_BIN_DIR"
 fi
-log "  U-Boot: $UBOOT_BIN_DIR (OK)"
+log "  U-Boot: $UBOOT_BIN_DIR"
 
-# Check required tools
+# Tools
 for tool in parted mkfs.vfat mkfs.ext4 losetup; do
     if ! command -v $tool &> /dev/null; then
         error "Required tool not found: $tool"
@@ -176,30 +165,27 @@ log ""
 log "Step 2: Creating image file..."
 
 mkdir -p "$IMAGE_DIR"
-
-# Remove old images for this variant only
 rm -f "$IMAGE_DIR"/ArchR-${IMAGE_SUFFIX}-*.img "$IMAGE_DIR"/ArchR-${IMAGE_SUFFIX}-*.img.xz
 
-# Create sparse image file
 dd if=/dev/zero of="$IMAGE_FILE" bs=1M count=0 seek=$IMAGE_SIZE 2>/dev/null
 log "  Created ${IMAGE_SIZE}MB image: $IMAGE_NAME"
 
 #------------------------------------------------------------------------------
-# Step 2.5: Install U-Boot Bootloader
+# Step 3: Install U-Boot Bootloader
 #------------------------------------------------------------------------------
 log ""
-log "Step 2.5: Installing U-Boot bootloader..."
+log "Step 3: Installing U-Boot bootloader..."
 
 dd if="$UBOOT_BIN_DIR/idbloader.img" of="$IMAGE_FILE" bs=512 seek=64 conv=sync,noerror,notrunc 2>/dev/null
 dd if="$UBOOT_BIN_DIR/uboot.img" of="$IMAGE_FILE" bs=512 seek=16384 conv=sync,noerror,notrunc 2>/dev/null
 dd if="$UBOOT_BIN_DIR/trust.img" of="$IMAGE_FILE" bs=512 seek=24576 conv=sync,noerror,notrunc 2>/dev/null
-log "  U-Boot installed from $UBOOT_BIN_DIR"
+log "  U-Boot installed"
 
 #------------------------------------------------------------------------------
-# Step 3: Create Partitions
+# Step 4: Create and Format Partitions
 #------------------------------------------------------------------------------
 log ""
-log "Step 3: Creating partitions..."
+log "Step 4: Creating partitions..."
 
 parted -s "$IMAGE_FILE" mklabel msdos
 
@@ -212,38 +198,21 @@ parted -s "$IMAGE_FILE" mkpart primary fat32 ${BOOT_START}MiB ${BOOT_END}MiB
 parted -s "$IMAGE_FILE" mkpart primary ext4 ${ROOTFS_START}MiB ${ROOTFS_END}MiB
 parted -s "$IMAGE_FILE" set 1 boot on
 
-log "  Partitions created"
-
-#------------------------------------------------------------------------------
-# Step 4: Setup Loop Devices
-#------------------------------------------------------------------------------
-log ""
-log "Step 4: Setting up loop devices..."
-
 LOOP_DEV=$(losetup -fP --show "$IMAGE_FILE")
 BOOT_PART="${LOOP_DEV}p1"
 ROOT_PART="${LOOP_DEV}p2"
-
 sleep 1
 
-log "  Loop device: $LOOP_DEV"
-
-#------------------------------------------------------------------------------
-# Step 5: Format Partitions
-#------------------------------------------------------------------------------
-log ""
-log "Step 5: Formatting partitions..."
-
 mkfs.vfat -F 32 -n BOOT "$BOOT_PART"
-mkfs.ext4 -L ROOTFS -O ^metadata_csum "$ROOT_PART"
+mkfs.ext4 -L STORAGE -O ^metadata_csum "$ROOT_PART"
 
-log "  Partitions formatted"
+log "  Partitions: BOOT (${BOOT_SIZE}MB FAT32) + STORAGE (${ROOTFS_SIZE}MB ext4)"
 
 #------------------------------------------------------------------------------
-# Step 6: Mount and Copy Files
+# Step 5: Mount and Copy Files
 #------------------------------------------------------------------------------
 log ""
-log "Step 6: Copying files..."
+log "Step 5: Copying files..."
 
 MOUNT_ROOT="$OUTPUT_DIR/mnt_root"
 MOUNT_BOOT="$OUTPUT_DIR/mnt_boot"
@@ -256,237 +225,71 @@ mount "$BOOT_PART" "$MOUNT_BOOT"
 log "  Copying rootfs..."
 rsync -aHxS --exclude='/boot' "$ROOTFS_DIR/" "$MOUNT_ROOT/"
 
-# --- Write variant marker (for panel-detect.py and other scripts) ---
+# --- Variant marker ---
 mkdir -p "$MOUNT_ROOT/etc/archr"
 echo "$VARIANT" > "$MOUNT_ROOT/etc/archr/variant"
-log "  Variant marker: /etc/archr/variant = $VARIANT"
 
-# --- Ensure first-boot runs on actual first boot ---
-# The rootfs may contain a stale flag from the build process
+# --- First-boot flag ---
 rm -f "$MOUNT_ROOT/var/lib/archr/.first-boot-done"
 
-# --- Boot partition: kernel Image ---
-log "  Copying boot files..."
-cp "$ROOTFS_DIR/boot/Image" "$MOUNT_BOOT/"
+# --- BOOT partition: KERNEL ---
+cp "$BOOT_OUTPUT/KERNEL" "$MOUNT_BOOT/KERNEL"
+log "  KERNEL installed"
 
-# --- Boot partition: kernel DTB (as kernel.dtb) ---
-cp "$ROOTFS_DIR/boot/$KERNEL_DTB_NAME" "$MOUNT_BOOT/kernel.dtb"
-log "  kernel.dtb <- $KERNEL_DTB_NAME"
+# --- BOOT partition: Board DTBs (ALL rk3326-*.dtb) ---
+mkdir -p "$MOUNT_BOOT/dtbs"
+cp "$BOOT_OUTPUT/dtbs"/rk3326-*.dtb "$MOUNT_BOOT/dtbs/"
+dtb_count=$(ls "$MOUNT_BOOT/dtbs"/rk3326-*.dtb | wc -l)
+log "  DTBs: $dtb_count board DTBs in /dtbs/"
 
-# --- Generate pre-merged panel DTBs (overlay applied at build-time) ---
-# Runs generate-panel-dtbos.sh to create DTBOs + pre-merged DTBs in one step.
-log "  Generating panel DTBs..."
-"$SCRIPT_DIR/scripts/generate-panel-dtbos.sh"
+# --- BOOT partition: Panel overlays ---
+mkdir -p "$MOUNT_BOOT/overlays"
+overlay_count=0
 
-# --- Boot partition: Pre-merged panel DTBs ---
-# Each panel gets its own kernel-*.dtb with the overlay already merged.
-# No fdt apply needed at boot — U-Boot just loads the right DTB by name.
-MERGED_DIR="$OUTPUT_DIR/panels/merged"
-if [ -d "$MERGED_DIR" ]; then
-    panel_count=0
+if [ -d "$PANELS_DIR" ]; then
+    for dtbo in "$PANELS_DIR"/*.dtbo; do
+        [ -f "$dtbo" ] || continue
+        cp "$dtbo" "$MOUNT_BOOT/overlays/"
+        overlay_count=$((overlay_count + 1))
+    done
 
-    if [ "$VARIANT" = "no-panel" ]; then
-        # Universal: include ALL panel DTBs (original + clone)
-        # Every panel has its own native DTB — no base/inherited DTBs.
-        for dtb in "$MERGED_DIR"/kernel-panel*.dtb "$MERGED_DIR"/kernel-clone*.dtb \
-                   "$MERGED_DIR"/kernel-r36max.dtb "$MERGED_DIR"/kernel-rx6s.dtb; do
-            [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
-        done
-        # Default panels: copy base DTBs with their panel number names
-        # Panel 4-V22 (original default) → kernel-panel4.dtb
-        [ -f "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" ] && \
-            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s.dtb" "$MOUNT_BOOT/kernel-panel4.dtb" && \
-            panel_count=$((panel_count + 1))
-        # Clone 8 G80CA (clone default) → kernel-clone8.dtb
-        [ -f "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s-clone-type5.dtb" ] && \
-            cp "$ROOTFS_DIR/boot/rk3326-gameconsole-r36s-clone-type5.dtb" "$MOUNT_BOOT/kernel-clone8.dtb" && \
-            panel_count=$((panel_count + 1))
-    elif [ "$VARIANT" = "original" ]; then
-        # R36S original: kernel-panel0.dtb through kernel-panel5.dtb
-        for dtb in "$MERGED_DIR"/kernel-panel*.dtb; do
-            [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
-        done
-    else
-        # R36S clone: kernel-clone*.dtb + kernel-r36max.dtb + kernel-rx6s.dtb
-        for dtb in "$MERGED_DIR"/kernel-clone*.dtb "$MERGED_DIR"/kernel-r36max.dtb "$MERGED_DIR"/kernel-rx6s.dtb; do
-            [ -f "$dtb" ] && cp "$dtb" "$MOUNT_BOOT/" && panel_count=$((panel_count + 1))
-        done
-    fi
-
-    log "  Panel DTBs: ${panel_count} pre-merged ($VARIANT)"
+    log "  Panel overlays: $overlay_count shipped (no default — Flasher selects panel)"
 else
-    warn "Pre-merged panel DTBs not found! Run scripts/generate-panel-dtbos.sh first"
+    warn "No panel overlays found — display may not work without mipi-panel.dtbo!"
 fi
 
-# --- Boot partition: U-Boot display DTB ---
-# BSP U-Boot: hwrev.c loads display DTB from FAT partition (init_kernel_dtb).
-# Mainline U-Boot: uses built-in DTS, no separate display DTB needed.
-if [ "$UBOOT_TYPE" = "mainline" ]; then
-    log "  U-Boot display DTB: not needed (mainline)"
-else
-    UBOOT_DTS_DIR="$SCRIPT_DIR/bootloader/u-boot-rk3326/arch/arm/dts"
-    display_dtb_copied=0
+# --- BOOT partition: boot.ini (BSP U-Boot reads directly) ---
+cp "$BOOT_INI" "$MOUNT_BOOT/boot.ini"
+log "  boot.ini installed"
 
-    if [ "$UBOOT_BIN_DIR" = "$UBOOT_BSP_DIR" ]; then
-        # BSP custom build: copy variant-specific DTB as uboot-display.dtb
-        if [ "$VARIANT" = "original" ]; then
-            UBOOT_SRC_DTB="$UBOOT_DTS_DIR/r36s-uboot.dtb"
-        else
-            UBOOT_SRC_DTB="$UBOOT_DTS_DIR/r36-uboot.dtb"
-        fi
-        if [ -f "$UBOOT_SRC_DTB" ]; then
-            cp "$UBOOT_SRC_DTB" "$MOUNT_BOOT/uboot-display.dtb"
-            display_dtb_copied=1
-            log "  uboot-display.dtb <- $(basename $UBOOT_SRC_DTB) (custom)"
-        fi
-    else
-        # Legacy pre-built: copy variant-specific DTB under its original name
-        if [ "$VARIANT" = "original" ]; then
-            UBOOT_DISPLAY_DTB="rg351mp-uboot.dtb"
-        else
-            UBOOT_DISPLAY_DTB="arkos4clone-uboot.dtb"
-        fi
-        for dtb_dir in "$UBOOT_BIN_DIR" "$UBOOT_DTS_DIR"; do
-            if [ -f "$dtb_dir/$UBOOT_DISPLAY_DTB" ]; then
-                cp "$dtb_dir/$UBOOT_DISPLAY_DTB" "$MOUNT_BOOT/$UBOOT_DISPLAY_DTB"
-                display_dtb_copied=1
-                log "  U-Boot display DTB: $UBOOT_DISPLAY_DTB (legacy)"
-                break
-            fi
-        done
-    fi
+# --- Initramfs is embedded in kernel (no separate file needed) ---
 
-    if [ "$display_dtb_copied" -eq 0 ]; then
-        warn "No U-Boot display DTB found — init_kernel_dtb() WILL FAIL!"
-    fi
-fi
-
-# --- Boot partition: boot script ---
-# Root device is auto-detected in boot.ini based on mmcdev (no substitution needed).
-if [ -f "$SCRIPT_DIR/config/boot.ini" ]; then
-    cp "$SCRIPT_DIR/config/boot.ini" "$MOUNT_BOOT/boot.ini"
-    log "  boot.ini installed (root auto-detect)"
-
-    # Mainline U-Boot: also create boot.scr (compiled boot script)
-    # Mainline uses distro boot flow → scans for boot.scr, not boot.ini
-    if [ "$UBOOT_TYPE" = "mainline" ]; then
-        MKIMAGE="$SCRIPT_DIR/bootloader/u-boot-mainline/tools/mkimage"
-        if [ -x "$MKIMAGE" ]; then
-            # mkimage doesn't support stdin pipe (-d -) reliably — use temp file
-            BOOT_SCR_SRC=$(mktemp)
-            grep -v '^odroidgoa-uboot-config' "$MOUNT_BOOT/boot.ini" > "$BOOT_SCR_SRC"
-            "$MKIMAGE" -T script -d "$BOOT_SCR_SRC" "$MOUNT_BOOT/boot.scr" >/dev/null 2>&1
-            rm -f "$BOOT_SCR_SRC"
-            log "  boot.scr created (mainline distro boot)"
-        else
-            warn "mkimage not found — boot.scr not created! Mainline U-Boot may not find boot script."
-        fi
-    fi
-else
-    error "boot.ini not found at config/boot.ini!"
-fi
-
-# --- Boot splash: initramfs with embedded splash (appears <1s after kernel start) ---
-# Splash is embedded in initramfs /init binary — no file I/O needed at boot time.
-# Pipeline: generate splash.bmp → xxd → compile archr-init → cpio → initramfs.img
-log "  Building boot splash initramfs..."
-
-SPLASH_FONT="$SCRIPT_DIR/assets/fonts/Quantico-Regular.ttf"
-SPLASH_TMPDIR=$(mktemp -d)
-BUILD_DATE=$(date +%Y%m%d)
-ARCHR_VERSION="v1.0"
-
-if command -v convert &>/dev/null && [ -f "$SPLASH_FONT" ] && command -v aarch64-linux-gnu-gcc &>/dev/null; then
-
-    # Step 1: Generate splash.bmp (Quantico font, glow effect, version+build)
-    convert -size 640x480 xc:black "$SPLASH_TMPDIR/base.png"
-    # ARCH glow (blue, blurred) — offset -33 centers "ARCH R" as a unit
-    convert -size 640x480 xc:transparent -font "$SPLASH_FONT" -pointsize 72 -fill '#1793D1' \
-        -gravity center -annotate -33+0 "ARCH" -channel RGBA -blur 0x8 "$SPLASH_TMPDIR/arch-glow.png"
-    # ARCH text (blue, sharp)
-    convert -size 640x480 xc:transparent -font "$SPLASH_FONT" -pointsize 72 -fill '#1793D1' \
-        -gravity center -annotate -33+0 "ARCH" "$SPLASH_TMPDIR/arch-text.png"
-    # R glow (white, blurred) — offset +107 gives proper spacing after ARCH
-    convert -size 640x480 xc:transparent -font "$SPLASH_FONT" -pointsize 72 -fill white \
-        -gravity center -annotate +107+0 "R" -channel RGBA -blur 0x8 "$SPLASH_TMPDIR/r-glow.png"
-    # R text (white, sharp)
-    convert -size 640x480 xc:transparent -font "$SPLASH_FONT" -pointsize 72 -fill white \
-        -gravity center -annotate +107+0 "R" "$SPLASH_TMPDIR/r-text.png"
-    # Version + build date
-    convert -size 640x480 xc:transparent -font "$SPLASH_FONT" -pointsize 14 -fill '#666666' \
-        -gravity center -annotate +0+50 "${ARCHR_VERSION} BUILD ${BUILD_DATE}" "$SPLASH_TMPDIR/version.png"
-    # Composite all layers
-    convert "$SPLASH_TMPDIR/base.png" \
-        "$SPLASH_TMPDIR/arch-glow.png" -composite \
-        "$SPLASH_TMPDIR/r-glow.png" -composite \
-        "$SPLASH_TMPDIR/arch-text.png" -composite \
-        "$SPLASH_TMPDIR/r-text.png" -composite \
-        "$SPLASH_TMPDIR/version.png" -composite \
-        -alpha remove -type TrueColor BMP3:"$SPLASH_TMPDIR/splash.bmp"
-    log "  splash.bmp created ($(du -h "$SPLASH_TMPDIR/splash.bmp" | cut -f1))"
-
-    # Step 2: Generate splash_data.h (embedded BMP data for archr-init)
-    cd "$SPLASH_TMPDIR"
-    xxd -i splash.bmp > splash_data.h
-    cd "$SCRIPT_DIR"
-    log "  splash_data.h generated ($(wc -l < "$SPLASH_TMPDIR/splash_data.h") lines)"
-
-    # Step 3: Compile archr-init with embedded splash (static aarch64 binary)
-    aarch64-linux-gnu-gcc -static -O2 -I"$SPLASH_TMPDIR" \
-        -o "$SPLASH_TMPDIR/archr-init" "$SCRIPT_DIR/scripts/archr-init.c"
-    log "  archr-init compiled ($(du -h "$SPLASH_TMPDIR/archr-init" | cut -f1))"
-
-    # Step 4: Create initramfs (cpio + gzip)
-    mkdir -p "$SPLASH_TMPDIR/initramfs"/{dev,proc,newroot}
-    cp "$SPLASH_TMPDIR/archr-init" "$SPLASH_TMPDIR/initramfs/init"
-    chmod 755 "$SPLASH_TMPDIR/initramfs/init"
-    (cd "$SPLASH_TMPDIR/initramfs" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$MOUNT_BOOT/initramfs.img")
-    log "  initramfs.img created ($(du -h "$MOUNT_BOOT/initramfs.img" | cut -f1))"
-
-    # Also copy splash.bmp to BOOT (for reference / fallback)
-    cp "$SPLASH_TMPDIR/splash.bmp" "$MOUNT_BOOT/splash.bmp"
-
-else
-    if ! command -v convert &>/dev/null; then
-        warn "ImageMagick not found — initramfs splash skipped"
-    elif [ ! -f "$SPLASH_FONT" ]; then
-        warn "Quantico font not found at $SPLASH_FONT — initramfs splash skipped"
-    else
-        warn "aarch64-linux-gnu-gcc not found — initramfs splash skipped"
-    fi
-fi
-rm -rf "$SPLASH_TMPDIR"
-
-# NOTE: extlinux.conf is NOT created — boot.ini / boot.scr is the primary boot method.
-log "  (no extlinux.conf — boot.ini is primary boot method)"
-
-# --- Rootfs: fstab (overrides rootfs fstab with correct entries) ---
+# --- Rootfs: fstab ---
 cat > "$MOUNT_ROOT/etc/fstab" << 'FSTAB_EOF'
 # Arch R fstab — optimized for fast boot
 # fsck disabled (fsck.mode=skip in cmdline + pass=0 here)
 LABEL=BOOT        /boot     vfat     defaults,noatime                       0      0
-LABEL=ROOTFS      /         ext4     defaults,noatime                       0      0
+LABEL=STORAGE     /         ext4     defaults,noatime                       0      0
 LABEL=ROMS        /roms     vfat     defaults,utf8,noatime,uid=1001,gid=1001,nofail,x-systemd.device-timeout=10s  0  0
 tmpfs             /tmp      tmpfs    defaults,nosuid,nodev,size=128M        0      0
 tmpfs             /var/log  tmpfs    defaults,nosuid,nodev,noexec,size=16M  0      0
 FSTAB_EOF
-log "  Files copied"
+
+log "  fstab installed"
 
 #------------------------------------------------------------------------------
-# Step 7: Cleanup
+# Step 6: Sync and Unmount
 #------------------------------------------------------------------------------
 log ""
-log "Step 7: Syncing filesystem..."
-
+log "Step 6: Syncing filesystem..."
 sync
-
 log "  Sync complete"
 
 #------------------------------------------------------------------------------
-# Step 8: Compress (optional)
+# Step 7: Compress
 #------------------------------------------------------------------------------
 log ""
-log "Step 8: Compressing image..."
+log "Step 7: Compressing image..."
 
 if command -v xz &> /dev/null; then
     rm -f "${IMAGE_FILE}.xz"
@@ -504,11 +307,12 @@ log "=== Image Build Complete ($VARIANT) ==="
 log ""
 
 IMAGE_SIZE_ACTUAL=$(du -h "$IMAGE_FILE" | cut -f1)
-log "Image: $IMAGE_FILE"
-log "Size: $IMAGE_SIZE_ACTUAL"
-log "Variant: $VARIANT"
+log "Image:    $IMAGE_FILE ($IMAGE_SIZE_ACTUAL)"
+log "Variant:  $VARIANT"
+log "DTBs:     $dtb_count board DTBs"
+log "Overlays: $overlay_count panel overlays"
 log ""
 log "To flash to SD card:"
 log "  sudo dd if=$IMAGE_FILE of=/dev/sdX bs=4M status=progress"
 log ""
-log "Arch R image ready ($VARIANT)!"
+log "Arch R image ready!"

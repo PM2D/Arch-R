@@ -1,9 +1,11 @@
 #!/bin/bash
 
 #==============================================================================
-# Arch R - Kernel 6.6 Build Script for R36S
+# Arch R - Kernel Build Script
 #==============================================================================
-# Builds Linux kernel 6.6.89 (Rockchip BSP) with R36S DTS + systemd support
+# Builds mainline Linux 6.12.x with Arch R patches for RK3326 R36S
+# Applies: device patches, 6.12-LTS patches, mainline patches
+# Builds: kernel Image + ALL DTBs + modules + out-of-tree joypad driver
 #==============================================================================
 
 set -e
@@ -14,7 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
 log() { echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"; }
@@ -22,21 +23,18 @@ warn() { echo -e "${YELLOW}[$(date '+%H:%M:%S')] WARNING:${NC} $1"; }
 error() { echo -e "${RED}[$(date '+%H:%M:%S')] ERROR:${NC} $1"; exit 1; }
 
 #------------------------------------------------------------------------------
-# Configuration - Kernel 6.6 Rockchip BSP
+# Configuration
 #------------------------------------------------------------------------------
 
-KERNEL_VERSION="6.6.89"
-KERNEL_BRANCH="develop-6.6"
-KERNEL_REPO="https://github.com/rockchip-linux/kernel.git"
-DEFCONFIG="rockchip_linux_defconfig"
-CONFIG_FRAGMENT="$SCRIPT_DIR/config/archr-6.6-r36s.config"
-
-# DTS targets
-R36S_DTB="rk3326-gameconsole-r36s"
-CLONE_DTB="rk3326-gameconsole-r36s-clone-type5"
+KERNEL_VERSION="6.12.61"
+KERNEL_URL="https://www.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
 
 # Paths
-KERNEL_SRC="${KERNEL_SRC:-/home/dgateles/Documentos/Projetos/kernel}"
+KERNEL_SRC="$SCRIPT_DIR/kernel/src/linux-${KERNEL_VERSION}"
+PATCHES_DIR="$SCRIPT_DIR/patches/linux"
+DTS_DIR="$SCRIPT_DIR/kernel/dts/archr"
+JOYPAD_DIR="$SCRIPT_DIR/kernel/drivers/archr-joypad"
+CONFIG_BASE="$SCRIPT_DIR/config/linux-archr-base.config"
 
 # Output
 OUTPUT_DIR="$SCRIPT_DIR/output"
@@ -50,13 +48,17 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 # Build parallelism
 JOBS=$(nproc)
 
+# DTS target directory inside kernel
+KERNEL_DTS_DIR="$KERNEL_SRC/arch/arm64/boot/dts/rockchip"
+
 log "================================================================"
-log "  Arch R - Kernel $KERNEL_VERSION (Rockchip BSP for R36S)"
+log "  Arch R - Kernel $KERNEL_VERSION (Mainline + Arch R patches)"
 log "================================================================"
 log ""
 log "Source:   $KERNEL_SRC"
-log "Branch:   $KERNEL_BRANCH"
-log "DTB:      $R36S_DTB"
+log "Patches:  $PATCHES_DIR"
+log "DTS:      $DTS_DIR"
+log "Config:   $CONFIG_BASE"
 log "Jobs:     $JOBS"
 
 #------------------------------------------------------------------------------
@@ -66,11 +68,13 @@ log ""
 log "Step 1: Checking kernel source..."
 
 if [ ! -d "$KERNEL_SRC" ]; then
-    log "  Cloning kernel 6.6 (rockchip-linux/kernel)..."
-    log "  Branch: $KERNEL_BRANCH"
-    git clone --depth 1 --branch "$KERNEL_BRANCH" \
-        "$KERNEL_REPO" "$KERNEL_SRC"
-    log "  Kernel cloned"
+    TARBALL="$SCRIPT_DIR/kernel/src/linux-${KERNEL_VERSION}.tar.xz"
+    if [ ! -f "$TARBALL" ]; then
+        log "  Downloading kernel $KERNEL_VERSION..."
+        wget -c "$KERNEL_URL" -O "$TARBALL"
+    fi
+    log "  Extracting..."
+    tar -xf "$TARBALL" -C "$SCRIPT_DIR/kernel/src/"
 fi
 
 if [ ! -f "$KERNEL_SRC/Makefile" ]; then
@@ -80,76 +84,130 @@ fi
 ACTUAL_VERSION=$(make -C "$KERNEL_SRC" -s kernelversion 2>/dev/null)
 log "  Kernel: $ACTUAL_VERSION"
 
-# Copy R36S DTS from Arch-R repo into kernel source tree
-DTS_SRC="$SCRIPT_DIR/kernel/dts/rk3326-gameconsole-r36s.dts"
-DTS_DEST="$KERNEL_SRC/arch/arm64/boot/dts/rockchip/rk3326-gameconsole-r36s.dts"
-if [ -f "$DTS_SRC" ]; then
-    cp "$DTS_SRC" "$DTS_DEST"
-    log "  DTS: copied from repo"
-else
-    if [ -f "$DTS_DEST" ]; then
-        warn "DTS not in Arch-R repo — using existing kernel source copy"
-    else
-        error "DTS not found! Expected at: $DTS_SRC"
-    fi
-fi
-
-# Copy clone DTS (if available)
-CLONE_DTS_SRC="$SCRIPT_DIR/kernel/dts/${CLONE_DTB}.dts"
-CLONE_DTS_DEST="$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${CLONE_DTB}.dts"
-if [ -f "$CLONE_DTS_SRC" ]; then
-    cp "$CLONE_DTS_SRC" "$CLONE_DTS_DEST"
-    log "  DTS (clone): copied from repo"
-fi
-
 #------------------------------------------------------------------------------
-# Step 2: Configure Kernel
+# Step 2: Apply Patches (idempotent — skip already applied)
 #------------------------------------------------------------------------------
 log ""
-log "Step 2: Configuring kernel..."
+log "Step 2: Applying patches..."
 
-# Apply base defconfig
-make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE $DEFCONFIG
-log "  Base: $DEFCONFIG"
+PATCH_MARKER="$KERNEL_SRC/.archr-patches-applied"
 
-# Merge R36S-specific config fragment
-# IMPORTANT: merge_config.sh writes output to .config in the CURRENT directory,
-# NOT to the base config path. Must run from kernel source dir.
-if [ -f "$CONFIG_FRAGMENT" ]; then
-    pushd "$KERNEL_SRC" > /dev/null
-    MERGE_LOG=$(scripts/kconfig/merge_config.sh \
-        -m .config "$CONFIG_FRAGMENT" 2>&1) || true
-    echo "$MERGE_LOG" | grep -E "(^#|Value)" | tail -20 || true
-    popd > /dev/null
-    make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
-    # Verify critical GPU config was applied
-    if grep -q "CONFIG_DRM_PANFROST=y" "$KERNEL_SRC/.config"; then
-        log "  Panfrost GPU: ENABLED (built-in)"
-    elif grep -q "CONFIG_DRM_PANFROST=m" "$KERNEL_SRC/.config"; then
-        log "  Panfrost GPU: ENABLED (module)"
-    else
-        warn "  Panfrost GPU: NOT ENABLED — check config fragment!"
-    fi
-    if grep -q "CONFIG_MALI_MIDGARD=y" "$KERNEL_SRC/.config"; then
-        warn "  Mali Midgard: STILL ENABLED (conflict with Panfrost!)"
-    else
-        log "  Mali Midgard: disabled (good)"
-    fi
-    log "  Merged: $(basename "$CONFIG_FRAGMENT")"
+if [ -f "$PATCH_MARKER" ]; then
+    log "  Patches already applied (marker exists). Skipping."
 else
-    warn "Config fragment not found: $CONFIG_FRAGMENT"
+    PATCH_COUNT=0
+
+    # Order: mainline first (GPIO API, input-polldev), then 6.12-LTS, then device-specific
+    for PATCH_SUBDIR in mainline 6.12-lts device; do
+        PDIR="$PATCHES_DIR/$PATCH_SUBDIR"
+        if [ ! -d "$PDIR" ]; then
+            warn "  Patch dir not found: $PDIR"
+            continue
+        fi
+        for PATCH in $(ls "$PDIR"/*.patch 2>/dev/null | sort); do
+            PNAME=$(basename "$PATCH")
+            log "  Applying [$PATCH_SUBDIR] $PNAME..."
+            if ! patch -d "$KERNEL_SRC" -p1 --forward --batch < "$PATCH" 2>&1 | tail -3; then
+                warn "  Patch may have failed or already applied: $PNAME"
+            fi
+            PATCH_COUNT=$((PATCH_COUNT + 1))
+        done
+    done
+
+    touch "$PATCH_MARKER"
+    log "  Applied $PATCH_COUNT patches"
 fi
+
+#------------------------------------------------------------------------------
+# Step 3: Copy DTS files
+#------------------------------------------------------------------------------
+log ""
+log "Step 3: Copying DTS files..."
+
+if [ ! -d "$DTS_DIR" ]; then
+    error "DTS directory not found: $DTS_DIR"
+fi
+
+DTS_COUNT=0
+for DTS_FILE in "$DTS_DIR"/*.dts "$DTS_DIR"/*.dtsi; do
+    [ -f "$DTS_FILE" ] || continue
+    DEST="$KERNEL_DTS_DIR/$(basename "$DTS_FILE")"
+    cp "$DTS_FILE" "$DEST"
+    DTS_COUNT=$((DTS_COUNT + 1))
+done
+
+# Add DTS entries to Makefile (for each .dts, ensure dtb- line exists)
+ROCKCHIP_MAKEFILE="$KERNEL_DTS_DIR/Makefile"
+for DTS_FILE in "$DTS_DIR"/*.dts; do
+    [ -f "$DTS_FILE" ] || continue
+    DTB_NAME=$(basename "$DTS_FILE" .dts)
+    if ! grep -q "${DTB_NAME}.dtb" "$ROCKCHIP_MAKEFILE"; then
+        # Add before the first empty line or at the end of the dtb list
+        echo "dtb-\$(CONFIG_ARCH_ROCKCHIP) += ${DTB_NAME}.dtb" >> "$ROCKCHIP_MAKEFILE"
+        log "  Added to Makefile: ${DTB_NAME}.dtb"
+    fi
+done
+
+log "  Copied $DTS_COUNT DTS files"
+
+#------------------------------------------------------------------------------
+# Step 4: Configure Kernel
+#------------------------------------------------------------------------------
+log ""
+log "Step 4: Configuring kernel..."
+
+if [ ! -f "$CONFIG_BASE" ]; then
+    error "Config base not found: $CONFIG_BASE"
+fi
+
+# Copy Arch R base config
+cp "$CONFIG_BASE" "$KERNEL_SRC/.config"
+
+# Replace placeholder for initramfs
+INITRAMFS_DIR="$OUTPUT_DIR/initramfs"
+if [ -d "$INITRAMFS_DIR" ] && [ -x "$INITRAMFS_DIR/init" ]; then
+    log "  Embedding initramfs from: $INITRAMFS_DIR"
+    sed -i "s|@INITRAMFS_SOURCE@|${INITRAMFS_DIR}|" "$KERNEL_SRC/.config"
+else
+    warn "  Initramfs not found at $INITRAMFS_DIR"
+    warn "  Run build-initramfs.sh first! Disabling embedded initramfs."
+    sed -i 's|CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=""|' "$KERNEL_SRC/.config"
+fi
+
+# Finalize config
+make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+
+# Verify critical settings
+log "  Verifying config..."
+check_config() {
+    local key="$1" expected="$2" desc="$3"
+    local val=$(grep "^${key}=" "$KERNEL_SRC/.config" 2>/dev/null | head -1)
+    if [ -z "$val" ]; then
+        val=$(grep "^# ${key} is not set" "$KERNEL_SRC/.config" 2>/dev/null | head -1)
+    fi
+    if echo "$val" | grep -q "$expected"; then
+        log "    $desc: OK"
+    else
+        warn "    $desc: UNEXPECTED ($val)"
+    fi
+}
+
+check_config "CONFIG_DRM_PANFROST" "=m" "Panfrost GPU"
+check_config "CONFIG_DRM_PANEL_SITRONIX_ST7703" "=y" "ST7703 panel"
+check_config "CONFIG_FRAMEBUFFER_CONSOLE" "=y" "fbcon"
+check_config "CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER" "is not set" "No deferred takeover"
+check_config "CONFIG_EXT4_FS" "=y" "ext4"
+check_config "CONFIG_DEVTMPFS" "=y" "devtmpfs"
 
 log "  Kernel configured"
 
 #------------------------------------------------------------------------------
-# Step 3: Build Kernel Image
+# Step 5: Build Kernel Image
 #------------------------------------------------------------------------------
 log ""
-log "Step 3: Building kernel Image..."
+log "Step 5: Building kernel Image..."
 
-make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE Image 2>&1 | \
-    tail -5
+make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE Image 2>&1 | tail -5
 
 if [ ! -f "$KERNEL_SRC/arch/arm64/boot/Image" ]; then
     error "Kernel Image build failed!"
@@ -159,85 +217,104 @@ IMAGE_SIZE=$(du -h "$KERNEL_SRC/arch/arm64/boot/Image" | cut -f1)
 log "  Kernel Image built ($IMAGE_SIZE)"
 
 #------------------------------------------------------------------------------
-# Step 4: Build Device Tree
+# Step 6: Build ALL Device Trees
 #------------------------------------------------------------------------------
 log ""
-log "Step 4: Building Device Tree ($R36S_DTB)..."
+log "Step 6: Building Device Trees..."
 
-make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
-    "rockchip/${R36S_DTB}.dtb" 2>&1 | tail -5
+# Build dtbs target (compiles all DTBs referenced in Makefile)
+make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE DTC_FLAGS=-@ dtbs 2>&1 | tail -10
 
-if [ ! -f "$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${R36S_DTB}.dtb" ]; then
-    error "DTB build failed: ${R36S_DTB}.dtb"
+# Verify R36S DTB was built
+if [ ! -f "$KERNEL_DTS_DIR/rk3326-gameconsole-r36s.dtb" ]; then
+    error "R36S DTB not built!"
 fi
 
-log "  DTB built: ${R36S_DTB}.dtb"
-
-# Build clone DTB (if DTS was copied)
-if [ -f "$CLONE_DTS_DEST" ]; then
-    make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
-        "rockchip/${CLONE_DTB}.dtb" 2>&1 | tail -5
-    if [ -f "$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${CLONE_DTB}.dtb" ]; then
-        log "  DTB built (clone): ${CLONE_DTB}.dtb"
-    else
-        warn "Clone DTB build failed: ${CLONE_DTB}.dtb"
-    fi
-fi
+DTB_COUNT=$(find "$KERNEL_DTS_DIR" -name "rk3326-*.dtb" | wc -l)
+log "  Built $DTB_COUNT RK3326 DTBs"
 
 #------------------------------------------------------------------------------
-# Step 5: Build Kernel Modules
+# Step 7: Build Kernel Modules
 #------------------------------------------------------------------------------
 log ""
-log "Step 5: Building kernel modules..."
+log "Step 7: Building kernel modules..."
 
-make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules 2>&1 | \
-    tail -5
+make -C "$KERNEL_SRC" -j$JOBS ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules 2>&1 | tail -5
 
 log "  Kernel modules built"
 
 #------------------------------------------------------------------------------
-# Step 6: Install to Output Directory
+# Step 8: Build Out-of-Tree Drivers
 #------------------------------------------------------------------------------
 log ""
-log "Step 6: Installing artifacts..."
+log "Step 8: Building out-of-tree drivers..."
+
+if [ -d "$JOYPAD_DIR" ] && [ -f "$JOYPAD_DIR/Makefile" ]; then
+    log "  Building archr-joypad..."
+    make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
+        M="$JOYPAD_DIR" modules 2>&1 | tail -5
+    if find "$JOYPAD_DIR" -name "*.ko" | grep -q .; then
+        log "  archr-joypad: OK"
+    else
+        warn "  archr-joypad: no .ko files produced"
+    fi
+else
+    warn "  Joypad driver not found at: $JOYPAD_DIR"
+fi
+
+#------------------------------------------------------------------------------
+# Step 9: Install to Output Directory
+#------------------------------------------------------------------------------
+log ""
+log "Step 9: Installing artifacts..."
 
 mkdir -p "$BOOT_DIR"
 mkdir -p "$MODULES_DIR"
 
-# Copy kernel image
-cp "$KERNEL_SRC/arch/arm64/boot/Image" "$BOOT_DIR/"
-log "  Copied: Image"
+# Copy kernel image as KERNEL (Arch R naming convention)
+cp "$KERNEL_SRC/arch/arm64/boot/Image" "$BOOT_DIR/KERNEL"
+log "  Copied: KERNEL"
 
-# Copy R36S DTB
-cp "$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${R36S_DTB}.dtb" "$BOOT_DIR/"
-log "  Copied: ${R36S_DTB}.dtb"
+# Copy ALL RK3326 DTBs to dtbs/ subdirectory
+mkdir -p "$BOOT_DIR/dtbs"
+for DTB in "$KERNEL_DTS_DIR"/rk3326-*.dtb; do
+    [ -f "$DTB" ] || continue
+    cp "$DTB" "$BOOT_DIR/dtbs/"
+done
+log "  Copied: $(ls "$BOOT_DIR/dtbs"/rk3326-*.dtb 2>/dev/null | wc -l) DTBs to dtbs/"
 
-# Copy clone DTB (if built)
-if [ -f "$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${CLONE_DTB}.dtb" ]; then
-    cp "$KERNEL_SRC/arch/arm64/boot/dts/rockchip/${CLONE_DTB}.dtb" "$BOOT_DIR/"
-    log "  Copied: ${CLONE_DTB}.dtb"
-fi
-
-# Install modules (use pipefail to catch errors masked by tail)
+# Install kernel modules
 set -o pipefail
 make -C "$KERNEL_SRC" ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
     INSTALL_MOD_PATH="$MODULES_DIR" \
     modules_install 2>&1 | tail -5
 set +o pipefail
 
-# Remove symlinks (save space)
+# Install joypad driver module
+if find "$JOYPAD_DIR" -name "*.ko" | grep -q .; then
+    KREL=$(cat "$KERNEL_SRC/include/config/kernel.release" 2>/dev/null)
+    JOYPAD_DEST="$MODULES_DIR/lib/modules/$KREL/extra/archr-joypad"
+    mkdir -p "$JOYPAD_DEST"
+    cp "$JOYPAD_DIR"/*.ko "$JOYPAD_DEST/"
+    log "  Installed joypad modules to: extra/archr-joypad/"
+    # Regenerate modules.dep
+    depmod -b "$MODULES_DIR" "$KREL"
+fi
+
+# Remove build/source symlinks (save space on target)
 rm -f "$MODULES_DIR/lib/modules/"*/source 2>/dev/null || true
 rm -f "$MODULES_DIR/lib/modules/"*/build 2>/dev/null || true
 
-# Verify critical module was installed
-KERNEL_FULL=$(make -C "$KERNEL_SRC" -s kernelversion 2>/dev/null)
-KREL=$(cat "$KERNEL_SRC/include/config/kernel.release" 2>/dev/null || echo "$KERNEL_FULL")
-if find "$MODULES_DIR/lib/modules/$KREL" -name 'panfrost.ko*' 2>/dev/null | grep -q .; then
-    log "  Panfrost module: INSTALLED"
-else
-    warn "  Panfrost module: NOT FOUND in $MODULES_DIR/lib/modules/$KREL/"
-    warn "  Check directory permissions (must be writable by build user)"
-fi
+# Verify critical modules
+KREL=$(cat "$KERNEL_SRC/include/config/kernel.release" 2>/dev/null)
+for MOD in panfrost; do
+    if find "$MODULES_DIR/lib/modules/$KREL" -name "${MOD}.ko*" 2>/dev/null | grep -q .; then
+        log "  Module OK: $MOD"
+    else
+        warn "  Module MISSING: $MOD"
+    fi
+done
+# Note: rockchipdrm is CONFIG_DRM_ROCKCHIP=y (built-in, not a module) — no .ko to check
 
 log "  Modules installed"
 
@@ -250,20 +327,21 @@ log "  BUILD COMPLETE"
 log "================================================================"
 log ""
 
-KERNEL_FULL=$(make -C "$KERNEL_SRC" -s kernelversion 2>/dev/null || echo "$KERNEL_VERSION")
-IMAGE_SIZE=$(du -h "$BOOT_DIR/Image" | cut -f1)
-DTB_SIZE=$(du -h "$BOOT_DIR/${R36S_DTB}.dtb" | cut -f1)
-MODULES_SIZE=$(du -sh "$MODULES_DIR" 2>/dev/null | cut -f1 || echo "N/A")
+KERNEL_FULL=$(make -C "$KERNEL_SRC" -s kernelversion 2>/dev/null)
+KERNEL_SIZE=$(du -h "$BOOT_DIR/KERNEL" | cut -f1)
+MODULES_SIZE=$(du -sh "$MODULES_DIR" 2>/dev/null | cut -f1)
+DTB_COUNT=$(ls "$BOOT_DIR/dtbs"/rk3326-*.dtb 2>/dev/null | wc -l)
 
-log "Kernel: $KERNEL_FULL"
+log "Kernel:  $KERNEL_FULL (mainline + Arch R patches)"
+log "KERNEL:  $BOOT_DIR/KERNEL ($KERNEL_SIZE)"
+log "DTBs:    $DTB_COUNT files in $BOOT_DIR/dtbs/"
+log "Modules: $MODULES_DIR/ ($MODULES_SIZE)"
 log ""
-CLONE_DTB_SIZE="N/A"
-[ -f "$BOOT_DIR/${CLONE_DTB}.dtb" ] && CLONE_DTB_SIZE=$(du -h "$BOOT_DIR/${CLONE_DTB}.dtb" | cut -f1)
-
-log "Artifacts:"
-log "  Image:     $BOOT_DIR/Image ($IMAGE_SIZE)"
-log "  DTB:       $BOOT_DIR/${R36S_DTB}.dtb ($DTB_SIZE)"
-log "  DTB clone: $BOOT_DIR/${CLONE_DTB}.dtb ($CLONE_DTB_SIZE)"
-log "  Modules:   $MODULES_DIR/ ($MODULES_SIZE)"
+log "Key DTBs:"
+for DTB in rk3326-gameconsole-r36s rk3326-odroid-go2 rk3326-gameconsole-r33s; do
+    if [ -f "$BOOT_DIR/dtbs/${DTB}.dtb" ]; then
+        log "  ${DTB}.dtb ($(du -h "$BOOT_DIR/dtbs/${DTB}.dtb" | cut -f1))"
+    fi
+done
 log ""
-log "Kernel 6.6 ready for R36S (original + clone)!"
+log "Ready for deployment to SD card!"

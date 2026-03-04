@@ -1,0 +1,10 @@
+config DRM_PANEL_ARCHR_DSI
+	tristate "Arch R Generic DSI Panel"
+	depends on OF && DRM_MIPI_DSI
+	help
+	  Generic DSI panel driver for Arch R gaming distribution.
+	  Reads panel configuration from device tree panel_description
+	  property (G/M/I string format). Supports any MIPI-DSI panel
+	  without kernel recompilation.
+
+	  If unsure, say Y.

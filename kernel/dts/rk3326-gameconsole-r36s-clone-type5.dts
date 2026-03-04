@@ -316,205 +316,167 @@
  * Different GPIOs, timing, and init from original R36S
  * ============================================================ */
 &internal_display {
-	compatible = "simple-panel-dsi";
+	compatible = "archr,generic-dsi";
 	reset-gpios = <&gpio3 RK_PD3 GPIO_ACTIVE_LOW>;
 	enable-gpios = <&gpio3 RK_PA3 GPIO_ACTIVE_HIGH>;
-	power-supply = <&vcc_lcd>;
+	vdd-supply = <&vcc_lcd>;
+	iovcc-supply = <&vcc_lcd>;
 	backlight = <&backlight>;
 
-	prepare-delay-ms = <20>;
-	reset-delay-ms = <20>;
-	init-delay-ms = <20>;
-	enable-delay-ms = <120>;
-	disable-delay-ms = <20>;
-	unprepare-delay-ms = <20>;
-
-	width-mm = <153>;
-	height-mm = <85>;
-
-	dsi,flags = <0xa03>;
-	dsi,format = <0>;
-	dsi,lanes = <4>;
-
-	/* Clone Type5 panel init sequence (NV3052C) */
-	panel-init-sequence = [
-		15 00 02 ff 30
-		15 00 02 ff 52
-		15 00 02 ff 01
-		15 00 02 e3 00
-		15 00 02 25 10
-		15 00 02 28 6f
-		15 00 02 29 01
-		15 00 02 2a df
-		15 00 02 2c 22
-		15 00 02 c3 0f
-		15 00 02 37 9c
-		15 00 02 38 a7
-		15 00 02 39 41
-		15 00 02 80 20
-		15 00 02 91 67
-		15 00 02 92 67
-		15 00 02 a0 55
-		15 00 02 a1 50
-		15 00 02 a3 58
-		15 00 02 a4 9c
-		15 00 02 a7 02
-		15 00 02 a8 01
-		15 00 02 a9 21
-		15 00 02 aa fc
-		15 00 02 ab 28
-		15 00 02 ac 06
-		15 00 02 ad 06
-		15 00 02 ae 06
-		15 00 02 af 03
-		15 00 02 b0 08
-		15 00 02 b1 26
-		15 00 02 b2 28
-		15 00 02 b3 28
-		15 00 02 b4 03
-		15 00 02 b5 08
-		15 00 02 b6 26
-		15 00 02 b7 08
-		15 00 02 b8 26
-		15 00 02 c0 00
-		15 00 02 c1 00
-		15 00 02 c2 00
-		15 00 02 ff 30
-		15 00 02 ff 52
-		15 00 02 ff 02
-		15 00 02 b0 02
-		15 00 02 d0 02
-		15 00 02 b1 0f
-		15 00 02 d1 10
-		15 00 02 b2 11
-		15 00 02 d2 12
-		15 00 02 b3 32
-		15 00 02 d3 33
-		15 00 02 b4 36
-		15 00 02 d4 36
-		15 00 02 b5 3c
-		15 00 02 d5 3c
-		15 00 02 b6 20
-		15 00 02 d6 20
-		15 00 02 b7 3e
-		15 00 02 d7 3e
-		15 00 02 b8 0e
-		15 00 02 d8 0d
-		15 00 02 b9 05
-		15 00 02 d9 05
-		15 00 02 ba 11
-		15 00 02 da 12
-		15 00 02 bb 11
-		15 00 02 db 11
-		15 00 02 bc 13
-		15 00 02 dc 14
-		15 00 02 bd 14
-		15 00 02 dd 14
-		15 00 02 be 16
-		15 00 02 de 18
-		15 00 02 bf 0e
-		15 00 02 df 0f
-		15 00 02 c0 17
-		15 00 02 e0 17
-		15 00 02 c1 07
-		15 00 02 e1 08
-		15 00 02 ff 30
-		15 00 02 ff 52
-		15 00 02 ff 03
-		15 00 02 08 8a
-		15 00 02 09 8b
-		15 00 02 30 00
-		15 00 02 31 00
-		15 00 02 32 00
-		15 00 02 33 00
-		15 00 02 34 61
-		15 00 02 35 d4
-		15 00 02 36 24
-		15 00 02 37 03
-		15 00 02 40 86
-		15 00 02 41 87
-		15 00 02 42 84
-		15 00 02 43 85
-		15 00 02 44 11
-		15 00 02 45 de
-		15 00 02 46 dd
-		15 00 02 47 11
-		15 00 02 48 e0
-		15 00 02 49 df
-		15 00 02 50 82
-		15 00 02 51 83
-		15 00 02 52 80
-		15 00 02 53 81
-		15 00 02 54 11
-		15 00 02 55 e2
-		15 00 02 56 e1
-		15 00 02 57 11
-		15 00 02 58 e4
-		15 00 02 59 e3
-		15 00 02 82 0f
-		15 00 02 83 0f
-		15 00 02 84 00
-		15 00 02 85 0f
-		15 00 02 86 0f
-		15 00 02 87 0e
-		15 00 02 88 0e
-		15 00 02 89 06
-		15 00 02 8a 06
-		15 00 02 8b 07
-		15 00 02 8c 07
-		15 00 02 8d 04
-		15 00 02 8e 04
-		15 00 02 8f 05
-		15 00 02 90 05
-		15 00 02 98 0f
-		15 00 02 99 0f
-		15 00 02 9a 00
-		15 00 02 9b 0f
-		15 00 02 9c 0f
-		15 00 02 9d 0e
-		15 00 02 9e 0e
-		15 00 02 9f 06
-		15 00 02 a0 06
-		15 00 02 a1 07
-		15 00 02 a2 07
-		15 00 02 a3 04
-		15 00 02 a4 04
-		15 00 02 a5 05
-		15 00 02 a6 05
-		15 00 02 e0 02
-		15 00 02 e1 52
-		15 00 02 ff 30
-		15 00 02 ff 52
-		15 00 02 ff 00
-		15 00 02 36 02
-		05 c8 01 11
-		05 64 01 29
-	];
-
-	panel-exit-sequence = [
-		05 00 01 28
-		05 00 01 10
-	];
-
-	display-timings {
-		native-mode = <&timing0>;
-
-		timing0: 60Hz {
-			clock-frequency = <30000000>;
-			hactive = <640>;
-			vactive = <480>;
-			hfront-porch = <168>;
-			hsync-len = <8>;
-			hback-porch = <161>;
-			vfront-porch = <16>;
-			vsync-len = <2>;
-			vback-porch = <14>;
-			hsync-active = <0>;
-			vsync-active = <0>;
-			de-active = <0>;
-			pixelclk-active = <1>;
-		};
-	};
+	panel_description =
+		"G size=153,85 delays=20,20,20,120,0 format=rgb888 lanes=4 flags=0xa03",
+		"M clock=30000 horizontal=640,168,8,161 vertical=480,16,2,14 default=1",
+		"I dcs=0xff data=30",
+		"I dcs=0xff data=52",
+		"I dcs=0xff data=01",
+		"I dcs=0xe3 data=00",
+		"I dcs=0x25 data=10",
+		"I dcs=0x28 data=6f",
+		"I dcs=0x29 data=01",
+		"I dcs=0x2a data=df",
+		"I dcs=0x2c data=22",
+		"I dcs=0xc3 data=0f",
+		"I dcs=0x37 data=9c",
+		"I dcs=0x38 data=a7",
+		"I dcs=0x39 data=41",
+		"I dcs=0x80 data=20",
+		"I dcs=0x91 data=67",
+		"I dcs=0x92 data=67",
+		"I dcs=0xa0 data=55",
+		"I dcs=0xa1 data=50",
+		"I dcs=0xa3 data=58",
+		"I dcs=0xa4 data=9c",
+		"I dcs=0xa7 data=02",
+		"I dcs=0xa8 data=01",
+		"I dcs=0xa9 data=21",
+		"I dcs=0xaa data=fc",
+		"I dcs=0xab data=28",
+		"I dcs=0xac data=06",
+		"I dcs=0xad data=06",
+		"I dcs=0xae data=06",
+		"I dcs=0xaf data=03",
+		"I dcs=0xb0 data=08",
+		"I dcs=0xb1 data=26",
+		"I dcs=0xb2 data=28",
+		"I dcs=0xb3 data=28",
+		"I dcs=0xb4 data=03",
+		"I dcs=0xb5 data=08",
+		"I dcs=0xb6 data=26",
+		"I dcs=0xb7 data=08",
+		"I dcs=0xb8 data=26",
+		"I dcs=0xc0 data=00",
+		"I dcs=0xc1 data=00",
+		"I dcs=0xc2 data=00",
+		"I dcs=0xff data=30",
+		"I dcs=0xff data=52",
+		"I dcs=0xff data=02",
+		"I dcs=0xb0 data=02",
+		"I dcs=0xd0 data=02",
+		"I dcs=0xb1 data=0f",
+		"I dcs=0xd1 data=10",
+		"I dcs=0xb2 data=11",
+		"I dcs=0xd2 data=12",
+		"I dcs=0xb3 data=32",
+		"I dcs=0xd3 data=33",
+		"I dcs=0xb4 data=36",
+		"I dcs=0xd4 data=36",
+		"I dcs=0xb5 data=3c",
+		"I dcs=0xd5 data=3c",
+		"I dcs=0xb6 data=20",
+		"I dcs=0xd6 data=20",
+		"I dcs=0xb7 data=3e",
+		"I dcs=0xd7 data=3e",
+		"I dcs=0xb8 data=0e",
+		"I dcs=0xd8 data=0d",
+		"I dcs=0xb9 data=05",
+		"I dcs=0xd9 data=05",
+		"I dcs=0xba data=11",
+		"I dcs=0xda data=12",
+		"I dcs=0xbb data=11",
+		"I dcs=0xdb data=11",
+		"I dcs=0xbc data=13",
+		"I dcs=0xdc data=14",
+		"I dcs=0xbd data=14",
+		"I dcs=0xdd data=14",
+		"I dcs=0xbe data=16",
+		"I dcs=0xde data=18",
+		"I dcs=0xbf data=0e",
+		"I dcs=0xdf data=0f",
+		"I dcs=0xc0 data=17",
+		"I dcs=0xe0 data=17",
+		"I dcs=0xc1 data=07",
+		"I dcs=0xe1 data=08",
+		"I dcs=0xff data=30",
+		"I dcs=0xff data=52",
+		"I dcs=0xff data=03",
+		"I dcs=0x08 data=8a",
+		"I dcs=0x09 data=8b",
+		"I dcs=0x30 data=00",
+		"I dcs=0x31 data=00",
+		"I dcs=0x32 data=00",
+		"I dcs=0x33 data=00",
+		"I dcs=0x34 data=61",
+		"I dcs=0x35 data=d4",
+		"I dcs=0x36 data=24",
+		"I dcs=0x37 data=03",
+		"I dcs=0x40 data=86",
+		"I dcs=0x41 data=87",
+		"I dcs=0x42 data=84",
+		"I dcs=0x43 data=85",
+		"I dcs=0x44 data=11",
+		"I dcs=0x45 data=de",
+		"I dcs=0x46 data=dd",
+		"I dcs=0x47 data=11",
+		"I dcs=0x48 data=e0",
+		"I dcs=0x49 data=df",
+		"I dcs=0x50 data=82",
+		"I dcs=0x51 data=83",
+		"I dcs=0x52 data=80",
+		"I dcs=0x53 data=81",
+		"I dcs=0x54 data=11",
+		"I dcs=0x55 data=e2",
+		"I dcs=0x56 data=e1",
+		"I dcs=0x57 data=11",
+		"I dcs=0x58 data=e4",
+		"I dcs=0x59 data=e3",
+		"I dcs=0x82 data=0f",
+		"I dcs=0x83 data=0f",
+		"I dcs=0x84 data=00",
+		"I dcs=0x85 data=0f",
+		"I dcs=0x86 data=0f",
+		"I dcs=0x87 data=0e",
+		"I dcs=0x88 data=0e",
+		"I dcs=0x89 data=06",
+		"I dcs=0x8a data=06",
+		"I dcs=0x8b data=07",
+		"I dcs=0x8c data=07",
+		"I dcs=0x8d data=04",
+		"I dcs=0x8e data=04",
+		"I dcs=0x8f data=05",
+		"I dcs=0x90 data=05",
+		"I dcs=0x98 data=0f",
+		"I dcs=0x99 data=0f",
+		"I dcs=0x9a data=00",
+		"I dcs=0x9b data=0f",
+		"I dcs=0x9c data=0f",
+		"I dcs=0x9d data=0e",
+		"I dcs=0x9e data=0e",
+		"I dcs=0x9f data=06",
+		"I dcs=0xa0 data=06",
+		"I dcs=0xa1 data=07",
+		"I dcs=0xa2 data=07",
+		"I dcs=0xa3 data=04",
+		"I dcs=0xa4 data=04",
+		"I dcs=0xa5 data=05",
+		"I dcs=0xa6 data=05",
+		"I dcs=0xe0 data=02",
+		"I dcs=0xe1 data=52",
+		"I dcs=0xff data=30",
+		"I dcs=0xff data=52",
+		"I dcs=0xff data=00",
+		"I dcs=0x36 data=02",
+		"I dcs=0x11 wait=200",
+		"I dcs=0x29 wait=100";
 };
 
 /* ============================================================
@@ -546,9 +508,9 @@
 	};
 };
 
-/* Clone USB: OTG port DISABLED (no OTG on clone hardware) */
+/* Clone USB: OTG port enabled for USB device support */
 &u2phy_otg {
-	status = "disabled";
+	status = "okay";
 };
 
 /*

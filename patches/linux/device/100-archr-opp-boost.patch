@@ -1,0 +1,36 @@
+From: Arch R <archr@localhost>
+Subject: [PATCH] arm64: dts: px30: Add CPU 1512MHz and GPU 600MHz OPP entries
+
+Arch R adds higher OPP entries for better gaming performance on RK3326.
+CPU 1512MHz at 1350mV (turbo-mode) and GPU 600MHz at 1200mV.
+These frequencies were confirmed stable on R36S hardware.
+
+Signed-off-by: Arch R <archr@localhost>
+---
+diff --git a/arch/arm64/boot/dts/rockchip/px30.dtsi b/arch/arm64/boot/dts/rockchip/px30.dtsi
+--- a/arch/arm64/boot/dts/rockchip/px30.dtsi
++++ b/arch/arm64/boot/dts/rockchip/px30.dtsi
+@@ -131,6 +131,12 @@
+ 		opp-1416000000 {
+ 			opp-hz = /bits/ 64 <1416000000>;
+ 			opp-microvolt = <1350000 1350000 1350000>;
++			clock-latency-ns = <40000>;
++			turbo-mode;
++		};
++		opp-1512000000 {
++			opp-hz = /bits/ 64 <1512000000>;
++			opp-microvolt = <1350000 1350000 1350000>;
+ 			clock-latency-ns = <40000>;
+ 			turbo-mode;
+ 		};
+@@ -1084,6 +1090,10 @@
+ 		opp-560000000 {
+ 			opp-hz = /bits/ 64 <560000000>;
+ 			opp-microvolt = <1150000>;
++		};
++		opp-600000000 {
++			opp-hz = /bits/ 64 <600000000>;
++			opp-microvolt = <1200000>;
+ 		};
+ 	};
+

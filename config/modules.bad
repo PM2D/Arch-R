@@ -1,0 +1,11 @@
+# Arch R — Modules to unload before suspend
+# These modules conflict with system suspend on RK3326 devices.
+# Loaded back automatically after wake by archr-sleep hook.
+
+# USB controller (conflicts with suspend state machine)
+dwc2
+
+# WiFi modules (fail to resume properly)
+mt7921e mt7921_common mt76_connac_lib mt76
+esp8089
+rtw88_8821cs
