@@ -38,13 +38,21 @@ export MESA_DISK_CACHE_SINGLE_FILE=1
 
 # === SYNCHRONOUS: Audio + brightness init ===
 _bt "before_amixer"
-amixer -q sset 'Playback Path' SPK 2>/dev/null
+# Auto-detect ALSA control names (BSP: DAC/Playback Path, Mainline: Master/Playback Mux)
+if amixer sget 'Master' &>/dev/null; then
+    ALSA_VOL=Master
+    ALSA_PATH="Playback Mux"
+else
+    ALSA_VOL=DAC
+    ALSA_PATH="Playback Path"
+fi
+amixer -q sset "$ALSA_PATH" SPK 2>/dev/null
 # Restore saved volume (default 80% on first boot)
 VOL_SAVE="$HOME/.config/archr/volume"
 if [ -f "$VOL_SAVE" ]; then
-    amixer -q sset 'DAC' "$(cat "$VOL_SAVE")%" 2>/dev/null
+    amixer -q sset "$ALSA_VOL" "$(cat "$VOL_SAVE")%" 2>/dev/null
 else
-    amixer -q sset 'DAC' 80% 2>/dev/null
+    amixer -q sset "$ALSA_VOL" 80% 2>/dev/null
 fi
 _bt "after_amixer"
 
@@ -84,12 +92,12 @@ _bt "after_amixer"
         sed -i \
             -e 's|<settings>|<config>|; s|</settings>|</config>|' \
             -e 's|"LogLevel" value="[^"]*"|"LogLevel" value="error"|' \
-            -e 's|"AudioDevice" value="[^"]*"|"AudioDevice" value="DAC"|' \
+            -e "s|\"AudioDevice\" value=\"[^\"]*\"|\"AudioDevice\" value=\"$ALSA_VOL\"|" \
             "$CFG"
         C=$(< "$CFG")
         ADDS=""
         [[ "$C" == *'"HideWindow"'* ]] || ADDS="${ADDS}\n  <bool name=\"HideWindow\" value=\"true\" />"
-        [[ "$C" == *'"AudioDevice"'* ]] || ADDS="${ADDS}\n  <string name=\"AudioDevice\" value=\"DAC\" />"
+        [[ "$C" == *'"AudioDevice"'* ]] || ADDS="${ADDS}\n  <string name=\"AudioDevice\" value=\"$ALSA_VOL\" />"
         [[ "$C" == *'"AudioCard"'* ]] || ADDS="${ADDS}\n  <string name=\"AudioCard\" value=\"default\" />"
         [[ "$C" == *'"EnableSounds"'* ]] || ADDS="${ADDS}\n  <bool name=\"EnableSounds\" value=\"true\" />"
         [ -n "$ADDS" ] && sed -i "s|<config>|<config>$ADDS|" "$CFG"
@@ -134,7 +142,7 @@ if [ ! -f "$HOME/.emulationstation/es_settings.cfg" ]; then
   <bool name="HideWindow" value="true" />
   <string name="LogLevel" value="error" />
   <string name="AudioCard" value="default" />
-  <string name="AudioDevice" value="DAC" />
+  <string name="AudioDevice" value="Master" />
   <bool name="EnableSounds" value="true" />
   <string name="ScreenSaverBehavior" value="black" />
   <string name="TransitionStyle" value="instant" />

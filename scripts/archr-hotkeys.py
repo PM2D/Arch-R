@@ -1,13 +1,16 @@
 #!/usr/bin/python3
 """
-Arch R - Hotkey Daemon (replaces dArkOS ogage)
+Arch R - Hotkey Daemon
 Listens for input events and handles:
   - KEY_VOLUMEUP/KEY_VOLUMEDOWN → ALSA volume adjust (from gpio-keys-vol)
   - MODE + VOL_UP/VOL_DOWN → brightness adjust
+  - MODE + B → screenshot
+  - MODE + X → WiFi toggle
+  - SELECT + START (hold 1s) → kill running game
   - Headphone jack insertion → audio path toggle (from rk817 codec)
 
 Volume device (gpio-keys-vol) is grabbed exclusively.
-Gamepad device (gpio-keys) is monitored passively (ES keeps receiving events).
+Gamepad device (gpio-keys or archr-singleadc-joypad) is monitored passively.
 """
 
 import os
@@ -37,11 +40,16 @@ BRIGHT_MIN = 5
 BRIGHT_SAVE = "/home/archr/.config/archr/brightness"
 VOL_SAVE = "/home/archr/.config/archr/volume"
 
-# ALSA simple mixer control name for rk817 BSP codec volume
-# Raw control is "DAC Playback Volume" (numid=8), but ALSA simple mixer maps it to "DAC"
-# amixer sset 'DAC Playback Volume' FAILS — must use simple name 'DAC'
-# "Playback Path" is an enum (SPK/HP/OFF), NOT a volume control
-ALSA_VOL_CTRL = "DAC"
+# ALSA simple mixer control name for rk817 codec volume.
+# Depends on machine driver:
+#   BSP kernel (rk817-sound):        "DAC" (from "DAC Playback Volume")
+#   Mainline (simple-audio-card):    "Master" (from "Master Playback Volume")
+# Detected at startup by detect_alsa_controls().
+ALSA_VOL_CTRL = "Master"  # default for mainline, overridden at startup
+# Speaker/headphone switch control:
+#   BSP: "Playback Path" (enum: OFF/SPK/HP/...)
+#   Mainline: "Playback Mux" (enum: HP/SPK)
+ALSA_PATH_CTRL = "Playback Mux"  # default for mainline, overridden at startup
 
 # rk817 codec volume range: ALSA reports [0, 255] but codec rejects values > 252
 # Writing > 252 causes "Volume out of range" and can ZERO the volume!
@@ -49,10 +57,38 @@ ALSA_VOL_CTRL = "DAC"
 VOL_MAX_PCT = 98
 VOL_MIN_PCT = 0
 
+# Kill switch: hold SELECT+START for this many seconds to kill running game
+KILL_HOLD_TIME = 1.0
+# Game PID file (written by retroarch-launch.sh and other wrappers)
+GAME_PIDFILE = "/tmp/.archr-game-pid"
+# Screenshot directory
+SCREENSHOT_DIR = "/home/archr/screenshots"
+
 
 # Log to BOOT partition (FAT32) — persistent across reboots, readable from PC
 # /tmp is tmpfs and lost on power off, making debugging impossible
 LOGFILE = "/boot/archr-hotkeys.log"
+
+
+def detect_alsa_controls():
+    """Detect ALSA volume and path control names at startup.
+    BSP kernel uses 'DAC' + 'Playback Path'.
+    Mainline simple-audio-card uses 'Master' + 'Playback Mux'."""
+    global ALSA_VOL_CTRL, ALSA_PATH_CTRL
+    try:
+        r = subprocess.run("amixer scontrols", shell=True,
+                           capture_output=True, text=True, timeout=5)
+        controls = r.stdout
+        if "'Master'" in controls:
+            ALSA_VOL_CTRL = "Master"
+        elif "'DAC'" in controls:
+            ALSA_VOL_CTRL = "DAC"
+        if "'Playback Mux'" in controls:
+            ALSA_PATH_CTRL = "Playback Mux"
+        elif "'Playback Path'" in controls:
+            ALSA_PATH_CTRL = "Playback Path"
+    except Exception:
+        pass
 
 
 def log(msg):
@@ -190,33 +226,94 @@ def brightness_down():
 
 def speaker_toggle(headphone_in):
     if headphone_in:
-        run_cmd("amixer -q sset 'Playback Path' HP")
+        run_cmd(f"amixer -q sset '{ALSA_PATH_CTRL}' HP")
     else:
-        run_cmd("amixer -q sset 'Playback Path' SPK")
+        run_cmd(f"amixer -q sset '{ALSA_PATH_CTRL}' SPK")
+
+
+def kill_running_game():
+    """Kill the currently running game/emulator (not ES)."""
+    # Try pidfile first (set by retroarch-launch.sh and other wrappers)
+    if os.path.exists(GAME_PIDFILE):
+        try:
+            with open(GAME_PIDFILE) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 9)
+            log(f"KILL: killed PID {pid} from pidfile")
+            try:
+                os.remove(GAME_PIDFILE)
+            except OSError:
+                pass
+            return True
+        except (ValueError, ProcessLookupError):
+            pass
+
+    # Fallback: kill known emulator process names
+    for proc in ['retroarch', 'drastic', 'ppsspp', 'mupen64plus', 'flycast',
+                 'desmume', 'picodrive', 'mednafen', 'archr-gptokeyb']:
+        rc = run_cmd(f"pkill -9 -x {proc}")
+        if rc == 0:
+            log(f"KILL: killed {proc}")
+            return True
+
+    log("KILL: no game process found")
+    return False
+
+
+def take_screenshot():
+    """Capture framebuffer to PNG."""
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    out = f"{SCREENSHOT_DIR}/screenshot_{ts}.png"
+    # Try fbgrab first (produces PNG)
+    rc = run_cmd(f"fbgrab {out}")
+    if rc != 0:
+        # Fallback: raw framebuffer dump
+        raw = f"{SCREENSHOT_DIR}/screenshot_{ts}.raw"
+        run_cmd(f"cp /dev/fb0 {raw}")
+        log(f"SCREENSHOT: raw capture → {raw}")
+    else:
+        log(f"SCREENSHOT: {out}")
+
+
+def toggle_wifi():
+    """Toggle WiFi radio on/off via NetworkManager."""
+    try:
+        r = subprocess.run("nmcli radio wifi", shell=True,
+                           capture_output=True, text=True, timeout=5)
+        state = r.stdout.strip()
+        if state == "enabled":
+            run_cmd("nmcli radio wifi off")
+            log("WIFI: disabled")
+        else:
+            run_cmd("nmcli radio wifi on")
+            log("WIFI: enabled")
+    except Exception as e:
+        log(f"WIFI toggle error: {e}")
 
 
 def find_devices():
-    """Find and categorize input devices."""
-    vol_dev = None    # gpio-keys-vol (grab: exclusive volume control)
-    pad_dev = None    # gpio-keys (no grab: monitor MODE button passively)
+    """Find and categorize input devices by capabilities (not just name).
+    Works with gpio-keys, adc-keys, and archr-singleadc-joypad."""
+    vol_dev = None    # device with KEY_VOLUMEUP (grab: exclusive volume control)
+    pad_dev = None    # device with BTN_SOUTH (no grab: monitor passively)
     sw_dev = None     # headphone jack (switch events)
 
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
-            name = dev.name.lower()
             caps = dev.capabilities()
+            key_caps = caps.get(ecodes.EV_KEY, [])
 
-            if 'gpio-keys' in name or 'adc-keys' in name:
-                # Distinguish vol device from gamepad by checking for KEY_VOLUMEUP
-                key_caps = caps.get(ecodes.EV_KEY, [])
-                if ecodes.KEY_VOLUMEUP in key_caps:
-                    vol_dev = dev
-                elif ecodes.BTN_SOUTH in key_caps or ecodes.BTN_DPAD_UP in key_caps:
-                    pad_dev = dev
+            # Volume device: has KEY_VOLUMEUP
+            if ecodes.KEY_VOLUMEUP in key_caps and not vol_dev:
+                vol_dev = dev
+            # Gamepad: has BTN_SOUTH or BTN_DPAD_UP (but NOT volume keys)
+            elif (ecodes.BTN_SOUTH in key_caps or ecodes.BTN_DPAD_UP in key_caps) and not pad_dev:
+                pad_dev = dev
 
             # Headphone jack switch events (from rk817 or similar codec)
-            if ecodes.EV_SW in caps:
+            if ecodes.EV_SW in caps and not sw_dev:
                 sw_dev = dev
 
         except Exception:
@@ -228,11 +325,21 @@ def find_devices():
 def main():
     print("Arch R Hotkey Daemon starting...")
 
+    # Detect ALSA control names (Master vs DAC, Playback Mux vs Playback Path)
+    detect_alsa_controls()
+    print(f"  ALSA volume: '{ALSA_VOL_CTRL}', path: '{ALSA_PATH_CTRL}'")
+
     # Wait for input devices to appear
+    # adc-keys (vol_dev) loads instantly (built-in), but singleadc-joypad (pad_dev)
+    # is a module that loads later. Wait for BOTH, with a timeout for pad_dev.
     vol_dev, pad_dev, sw_dev = None, None, None
     for attempt in range(30):
         vol_dev, pad_dev, sw_dev = find_devices()
-        if vol_dev:
+        if vol_dev and pad_dev:
+            break
+        # After 10s, start with just vol_dev (pad_dev may not exist on all boards)
+        if vol_dev and attempt >= 10:
+            log(f"WARN: pad_dev not found after {attempt}s, starting without gamepad")
             break
         time.sleep(1)
 
@@ -250,15 +357,22 @@ def main():
         # DO NOT grab — ES needs this device for gamepad input
         print(f"  Gamepad: {pad_dev.name} ({pad_dev.path}) [passive]")
         devices.append(pad_dev)
+    else:
+        print("  Gamepad: not found yet (will rescan)")
 
     if sw_dev and sw_dev not in devices:
         print(f"  Switch: {sw_dev.name} ({sw_dev.path}) [passive]")
         devices.append(sw_dev)
 
-    # Track MODE button state for brightness hotkey combo
+    # Track button states
     mode_held = False
+    select_held = False
+    start_held = False
+    kill_combo_start = 0.0  # monotonic time when SELECT+START both held
     # Throttle: last time a volume/brightness action was executed
     last_vol_action = 0.0
+    # Rescan timer: if pad_dev was not found at startup, try again periodically
+    last_rescan = time.monotonic()
 
     print("Hotkey daemon ready.")
     # Clear previous log on fresh start
@@ -270,11 +384,14 @@ def main():
     log(f"  vol_dev: {vol_dev.name} ({vol_dev.path})")
     if pad_dev:
         log(f"  pad_dev: {pad_dev.name} ({pad_dev.path})")
+    else:
+        log("  pad_dev: NOT FOUND (will rescan every 5s)")
 
     # Startup amixer diagnostic — confirm volume control works from daemon context
     log("--- Startup ALSA diagnostic ---")
-    r = subprocess.run("amixer sget 'DAC' 2>&1", shell=True, capture_output=True, text=True, timeout=5)
-    log(f"  amixer sget 'DAC' rc={r.returncode}")
+    log(f"  vol_ctrl='{ALSA_VOL_CTRL}' path_ctrl='{ALSA_PATH_CTRL}'")
+    r = subprocess.run(f"amixer sget '{ALSA_VOL_CTRL}' 2>&1", shell=True, capture_output=True, text=True, timeout=5)
+    log(f"  amixer sget '{ALSA_VOL_CTRL}' rc={r.returncode}")
     for line in r.stdout.strip().split('\n'):
         log(f"    {line}")
     if r.stderr.strip():
@@ -284,7 +401,31 @@ def main():
 
     try:
         while True:
-            r, _, _ = select.select(devices, [], [], 2.0)
+            # Rescan for pad_dev if not found yet (module may load late)
+            if not pad_dev and time.monotonic() - last_rescan >= 5.0:
+                last_rescan = time.monotonic()
+                _, new_pad, new_sw = find_devices()
+                if new_pad:
+                    pad_dev = new_pad
+                    devices.append(pad_dev)
+                    log(f"RESCAN: pad_dev found: {pad_dev.name} ({pad_dev.path})")
+                if new_sw and new_sw not in devices:
+                    sw_dev = new_sw
+                    devices.append(sw_dev)
+                    log(f"RESCAN: sw_dev found: {sw_dev.name} ({sw_dev.path})")
+
+            # Fast poll when kill combo is pending, otherwise idle
+            timeout = 0.1 if kill_combo_start > 0 else 2.0
+            r, _, _ = select.select(devices, [], [], timeout)
+
+            # Check kill combo hold timer
+            if kill_combo_start > 0:
+                if select_held and start_held:
+                    if time.monotonic() - kill_combo_start >= KILL_HOLD_TIME:
+                        kill_running_game()
+                        kill_combo_start = 0
+                else:
+                    kill_combo_start = 0  # one was released
 
             for dev in r:
                 try:
@@ -292,21 +433,30 @@ def main():
                         if event.type == ecodes.EV_KEY:
                             key = event.code
                             val = event.value  # 1=press, 0=release, 2=repeat
-                            # Log ALL key events for debugging
                             keyname = ecodes.KEY.get(key, ecodes.BTN.get(key, f"?{key}"))
                             valname = {0: "UP", 1: "DOWN", 2: "REPEAT"}.get(val, f"?{val}")
                             log(f"KEY: {keyname}({key}) {valname} dev={dev.name} mode={mode_held}")
 
                             # Track MODE button from gamepad (passive)
                             if key == ecodes.BTN_MODE:
-                                if val == 1:
-                                    mode_held = True
-                                elif val == 0:
-                                    mode_held = False
+                                mode_held = (val >= 1)
+
+                            # Track SELECT for kill combo
+                            elif key == ecodes.BTN_SELECT:
+                                select_held = (val >= 1)
+                                if select_held and start_held and kill_combo_start == 0:
+                                    kill_combo_start = time.monotonic()
+
+                            # Track START for kill combo
+                            elif key == ecodes.BTN_START:
+                                start_held = (val >= 1)
+                                if select_held and start_held and kill_combo_start == 0:
+                                    kill_combo_start = time.monotonic()
 
                             # Volume keys (grabbed): accept press + repeat,
                             # but throttle to max ~3 events/sec (300ms interval).
-                            # adc-keys autorepeat fires at ~30Hz natively.
+                            # MUST come before MODE combos — the generic mode_held
+                            # handler would swallow volume keys otherwise.
                             elif key == ecodes.KEY_VOLUMEUP and val in (1, 2):
                                 now = time.monotonic()
                                 if now - last_vol_action >= VOL_THROTTLE:
@@ -324,6 +474,13 @@ def main():
                                         brightness_down()
                                     else:
                                         volume_down()
+
+                            # MODE combos (on initial press only, non-volume keys)
+                            elif mode_held and val == 1:
+                                if key == ecodes.BTN_EAST:    # B button
+                                    take_screenshot()
+                                elif key == ecodes.BTN_NORTH:  # X button
+                                    toggle_wifi()
 
                         # Headphone jack switch
                         elif event.type == ecodes.EV_SW:

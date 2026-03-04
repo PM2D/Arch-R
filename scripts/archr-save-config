@@ -1,0 +1,70 @@
+#!/bin/bash
+# Arch R — Save System Config on Shutdown
+# Backs up critical runtime config to /boot for persistence across rootfs rebuilds.
+# Runs as ExecStop in a systemd service (triggered on shutdown).
+
+BACKUP_DIR="/boot/archr-backup"
+log() { logger -t archr-save-config "$1"; }
+
+# Auto-detect ALSA volume control (BSP: DAC, Mainline: Master)
+if amixer sget 'Master' &>/dev/null; then
+    ALSA_VOL=Master
+else
+    ALSA_VOL=DAC
+fi
+
+case "${1:-backup}" in
+    backup)
+        mkdir -p "$BACKUP_DIR"
+
+        # Save ALSA mixer state
+        alsactl store -f "$BACKUP_DIR/asound.state" 2>/dev/null
+
+        # Save brightness
+        BRIGHTNESS=$(cat /sys/class/backlight/*/brightness 2>/dev/null | head -1)
+        [ -n "$BRIGHTNESS" ] && echo "$BRIGHTNESS" > "$BACKUP_DIR/brightness"
+
+        # Save volume
+        VOL=$(amixer -c 0 sget "$ALSA_VOL" 2>/dev/null | grep -o '[0-9]*%' | head -1)
+        [ -n "$VOL" ] && echo "$VOL" > "$BACKUP_DIR/volume"
+
+        # Save WiFi connections
+        if [ -d /etc/NetworkManager/system-connections ]; then
+            cp -a /etc/NetworkManager/system-connections "$BACKUP_DIR/wifi" 2>/dev/null
+        fi
+
+        # Sync to disk
+        sync
+
+        log "Config saved to $BACKUP_DIR"
+        ;;
+
+    restore)
+        # Restore ALSA state
+        [ -f "$BACKUP_DIR/asound.state" ] && alsactl restore -f "$BACKUP_DIR/asound.state" 2>/dev/null
+
+        # Restore brightness
+        if [ -f "$BACKUP_DIR/brightness" ]; then
+            for bl in /sys/class/backlight/*/brightness; do
+                cat "$BACKUP_DIR/brightness" > "$bl" 2>/dev/null
+            done
+        fi
+
+        # Restore volume
+        if [ -f "$BACKUP_DIR/volume" ]; then
+            amixer -c 0 sset "$ALSA_VOL" "$(cat "$BACKUP_DIR/volume")" 2>/dev/null
+        fi
+
+        # Restore WiFi
+        if [ -d "$BACKUP_DIR/wifi" ]; then
+            cp -a "$BACKUP_DIR/wifi"/* /etc/NetworkManager/system-connections/ 2>/dev/null
+            chmod 600 /etc/NetworkManager/system-connections/* 2>/dev/null
+        fi
+
+        log "Config restored from $BACKUP_DIR"
+        ;;
+
+    *)
+        echo "Usage: archr-save-config {backup|restore}"
+        ;;
+esac

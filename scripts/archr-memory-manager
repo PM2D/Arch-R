@@ -1,0 +1,74 @@
+#!/bin/bash
+# Arch R — Memory Manager
+# Configures ZRAM swap and manages memory for optimal gaming performance.
+#
+# Usage:
+#   archr-memory-manager setup    — Configure and enable ZRAM swap
+#   archr-memory-manager stop     — Disable ZRAM swap
+#   archr-memory-manager status   — Show memory/swap status
+
+ZRAM_SIZE_MB=128
+ZRAM_ALGO="lzo"
+
+log() { logger -t archr-mem "$1"; }
+
+setup_swap() {
+    # Skip if already active
+    if swapon --show=NAME --noheadings | grep -q zram; then
+        log "ZRAM swap already active"
+        return 0
+    fi
+
+    # Load zram module
+    modprobe zram num_devices=1 2>/dev/null
+
+    # Wait for device
+    for i in $(seq 1 10); do
+        [ -e /sys/block/zram0 ] && break
+        sleep 0.1
+    done
+
+    if [ ! -e /sys/block/zram0 ]; then
+        log "ERROR: zram0 device not found"
+        return 1
+    fi
+
+    # Configure
+    echo "$ZRAM_ALGO" > /sys/block/zram0/comp_algorithm
+    echo "$((ZRAM_SIZE_MB * 1024 * 1024))" > /sys/block/zram0/disksize
+
+    # Format and enable
+    mkswap /dev/zram0 >/dev/null 2>&1
+    swapon -p 100 /dev/zram0
+
+    log "ZRAM swap enabled: ${ZRAM_SIZE_MB}MB ($ZRAM_ALGO)"
+}
+
+stop_swap() {
+    swapoff /dev/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    log "ZRAM swap disabled"
+}
+
+show_status() {
+    echo "=== Memory Status ==="
+    free -h
+    echo ""
+    echo "=== Swap Devices ==="
+    swapon --show 2>/dev/null || echo "No swap active"
+    echo ""
+    if [ -e /sys/block/zram0 ]; then
+        echo "=== ZRAM ==="
+        echo "Algorithm: $(cat /sys/block/zram0/comp_algorithm 2>/dev/null)"
+        echo "Disk size: $(cat /sys/block/zram0/disksize 2>/dev/null) bytes"
+        echo "Compressed: $(cat /sys/block/zram0/mm_stat 2>/dev/null | awk '{print $2}') bytes"
+    fi
+}
+
+case "${1:-setup}" in
+    setup)  setup_swap ;;
+    stop)   stop_swap ;;
+    reload) stop_swap; setup_swap ;;
+    status) show_status ;;
+    *)      echo "Usage: archr-memory-manager {setup|stop|reload|status}" ;;
+esac

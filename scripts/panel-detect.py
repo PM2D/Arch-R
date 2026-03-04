@@ -26,6 +26,7 @@ Panel selection is persistent:
 import math
 import os
 import select
+import shutil
 import struct
 import subprocess
 import sys
@@ -62,37 +63,39 @@ WAIT_PER_PANEL = 15    # seconds to wait for input per panel
 MAX_CYCLES = 2         # auto-confirm default after this many full cycles
 
 # --- Panel definitions per variant ---
-# (panel_num, dtb_name, friendly_name)
-# Empty dtb_name = default panel (hardcoded in base DTB kernel.dtb, no overlay)
-# Non-empty dtb_name = pre-merged DTB with overlay applied at build-time
+# (panel_num, dtb_name, dtbo_name, friendly_name)
+# dtb_name: pre-merged DTB for BSP U-Boot (boot.ini PanelDTB). Empty = default (kernel.dtb).
+# dtbo_name: overlay DTBO for mainline U-Boot (FDTOVERLAYS). Copied to overlays/mipi-panel.dtbo.
 # Order: numerical (beep count = position in list, Panel 0 = 1 beep, etc.)
 
-# R36S Original — 6 panels, default is Panel 4-V22 (~60% of units)
-# Beeps: Panel 0=1, Panel 1=2, Panel 2=3, Panel 3=4, Panel 4=5, Panel 5=6
+# R36S Original — 8 panels, default is Panel 4-V22 (~60% of units)
+# Beeps: Panel 0=1, Panel 1=2, ..., Panel 5=6, Panel 4nv22=7, R46H=8
 PANELS_ORIGINAL = [
-    ("0",    "kernel-panel0.dtb",   "Panel 0"),
-    ("1",    "kernel-panel1.dtb",   "Panel 1-V10"),
-    ("2",    "kernel-panel2.dtb",   "Panel 2-V12"),
-    ("3",    "kernel-panel3.dtb",   "Panel 3-V20"),
-    ("4",    "",                    "Panel 4-V22 (Default)"),
-    ("5",    "kernel-panel5.dtb",   "Panel 5-V22 Q8"),
+    ("0",    "kernel-panel0.dtb",   "panel0.dtbo",          "Panel 0"),
+    ("1",    "kernel-panel1.dtb",   "panel1.dtbo",          "Panel 1-V10"),
+    ("2",    "kernel-panel2.dtb",   "panel2.dtbo",          "Panel 2-V12"),
+    ("3",    "kernel-panel3.dtb",   "panel3.dtbo",          "Panel 3-V20"),
+    ("4",    "",                    "panel4.dtbo",          "Panel 4-V22 (Default)"),
+    ("5",    "kernel-panel5.dtb",   "panel5.dtbo",          "Panel 5-V22 Q8"),
+    ("6",    "kernel-panel6.dtb",   "panel6.dtbo",          "Panel 4 non-V22"),
+    ("7",    "kernel-panel7.dtb",   "panel7.dtbo",          "R46H (1024x768)"),
 ]
 
 # R36S Clone — 12 panels, default is Clone 8 ST7703 (G80CA-MB)
 # Beeps: Clone 1=1, Clone 2=2, ..., Clone 10=10, R36 Max=11, RX6S=12
 PANELS_CLONE = [
-    ("C1",   "kernel-clone1.dtb",     "Clone 1 (ST7703)"),
-    ("C2",   "kernel-clone2.dtb",     "Clone 2 (ST7703)"),
-    ("C3",   "kernel-clone3.dtb",     "Clone 3 (NV3051D)"),
-    ("C4",   "kernel-clone4.dtb",     "Clone 4 (NV3051D)"),
-    ("C5",   "kernel-clone5.dtb",     "Clone 5 (ST7703)"),
-    ("C6",   "kernel-clone6.dtb",     "Clone 6 (NV3051D)"),
-    ("C7",   "kernel-clone7.dtb",     "Clone 7 (JD9365DA)"),
-    ("C8",   "",                      "Clone 8 ST7703 G80CA (Default)"),
-    ("C9",   "kernel-clone9.dtb",     "Clone 9 (NV3051D)"),
-    ("C10",  "kernel-clone10.dtb",    "Clone 10 (ST7703)"),
-    ("MAX",  "kernel-r36max.dtb",     "R36 Max (720x720)"),
-    ("RX6S", "kernel-rx6s.dtb",       "RX6S (NV3051D)"),
+    ("C1",   "kernel-clone1.dtb",     "clone_panel_1.dtbo",   "Clone 1 (ST7703)"),
+    ("C2",   "kernel-clone2.dtb",     "clone_panel_2.dtbo",   "Clone 2 (ST7703)"),
+    ("C3",   "kernel-clone3.dtb",     "clone_panel_3.dtbo",   "Clone 3 (NV3051D)"),
+    ("C4",   "kernel-clone4.dtb",     "clone_panel_4.dtbo",   "Clone 4 (NV3051D)"),
+    ("C5",   "kernel-clone5.dtb",     "clone_panel_5.dtbo",   "Clone 5 (ST7703)"),
+    ("C6",   "kernel-clone6.dtb",     "clone_panel_6.dtbo",   "Clone 6 (NV3051D)"),
+    ("C7",   "kernel-clone7.dtb",     "clone_panel_7.dtbo",   "Clone 7 (JD9365DA)"),
+    ("C8",   "",                      "clone_panel_8.dtbo",   "Clone 8 ST7703 G80CA (Default)"),
+    ("C9",   "kernel-clone9.dtb",     "clone_panel_9.dtbo",   "Clone 9 (NV3051D)"),
+    ("C10",  "kernel-clone10.dtb",    "clone_panel_10.dtbo",  "Clone 10 (ST7703)"),
+    ("MAX",  "kernel-r36max.dtb",     "r36_max.dtbo",         "R36 Max (720x720)"),
+    ("RX6S", "kernel-rx6s.dtb",       "rx6s.dtbo",            "RX6S (NV3051D)"),
 ]
 
 
@@ -271,8 +274,40 @@ def fsync_write(path, data):
     os.close(dir_fd)
 
 
-def write_panel_config(panel_num, dtb_name):
-    """Write panel.txt for U-Boot to load on next boot."""
+def activate_overlay(dtbo_name):
+    """Copy panel DTBO to overlays/mipi-panel.dtbo (FDTOVERLAYS at boot).
+
+    syslinux in mainline U-Boot applies this overlay to kernel.dtb at boot.
+    """
+    overlays_dir = BOOT_DIR / "overlays"
+    src = overlays_dir / dtbo_name
+    dst = overlays_dir / "mipi-panel.dtbo"
+    if src.exists():
+        shutil.copy2(str(src), str(dst))
+        # fsync for FAT32 persistence
+        fd = os.open(str(dst), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+        dir_fd = os.open(str(overlays_dir), os.O_RDONLY)
+        os.fsync(dir_fd)
+        os.close(dir_fd)
+        log_boot(f"overlay: {dtbo_name} -> mipi-panel.dtbo")
+    else:
+        log_boot(f"overlay NOT FOUND: {dtbo_name}")
+
+
+def write_panel_config(panel_num, dtb_name, dtbo_name):
+    """Write panel config for next boot.
+
+    Two mechanisms:
+      - overlays/mipi-panel.dtbo: mainline U-Boot FDTOVERLAYS (clone sysboot)
+      - panel.txt PanelDTB: BSP U-Boot boot.ini (original variant fallback)
+    """
+    # Activate overlay (works for both variants — harmless if unused)
+    if dtbo_name:
+        activate_overlay(dtbo_name)
+
+    # Write panel.txt for BSP U-Boot compatibility (original variant)
     content = f"PanelNum={panel_num}\n"
     if dtb_name:
         content += f"PanelDTB={dtb_name}\n"
@@ -361,7 +396,7 @@ def main():
     default_panel = next((p for p in panels if not p[1]), panels[0])  # Default = empty dtb_name
 
     print(f"Arch R Panel Detection Wizard starting (variant: {variant})...")
-    print(f"  {len(panels)} panels available, default: {default_panel[2]}")
+    print(f"  {len(panels)} panels available, default: {default_panel[3]}")
 
     # Initialize audio
     init_audio()
@@ -373,7 +408,7 @@ def main():
 
     if not gamepad:
         print("WARNING: Gamepad not found — auto-confirming default panel")
-        write_panel_config(default_panel[0], default_panel[1])
+        write_panel_config(default_panel[0], default_panel[1], default_panel[2])
         confirm_panel()
         subprocess.run(["sync"])
         sys.exit(0)
@@ -386,9 +421,9 @@ def main():
 
     # Panel selection loop
     for cycle in range(MAX_CYCLES):
-        for idx, (panel_num, dtb_name, name) in enumerate(panels):
+        for idx, (panel_num, dtb_name, dtbo_name, name) in enumerate(panels):
             # Write panel config (ready for confirm)
-            write_panel_config(panel_num, dtb_name)
+            write_panel_config(panel_num, dtb_name, dtbo_name)
 
             # Visual feedback on tty1
             position = f"[{idx + 1}/{len(panels)}]"
@@ -432,9 +467,9 @@ def main():
                 continue
 
     # After MAX_CYCLES without confirmation: auto-confirm default
-    print(f"  No selection made — auto-confirming default {default_panel[2]}")
-    write_panel_config(default_panel[0], default_panel[1])
-    write_tty(f"Auto-confirmed: {default_panel[2]}")
+    print(f"  No selection made — auto-confirming default {default_panel[3]}")
+    write_panel_config(default_panel[0], default_panel[1], default_panel[2])
+    write_tty(f"Auto-confirmed: {default_panel[3]}")
     play_confirm_sound(generate_beep_wav(freq=440, duration=0.2))
     confirm_panel()
     subprocess.run(["sync"])

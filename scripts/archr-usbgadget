@@ -1,0 +1,129 @@
+#!/bin/bash
+# Arch R — USB Gadget Mode Control
+# Configures USB OTG port as a gadget device (network over USB or mass storage).
+#
+# Usage:
+#   archr-usbgadget enable [ncm|rndis|mass_storage]
+#   archr-usbgadget disable
+#   archr-usbgadget trigger   (called by udev on cable plug)
+#   archr-usbgadget status
+
+GADGET_DIR="/sys/kernel/config/usb_gadget/archr"
+UDC=$(ls /sys/class/udc/ 2>/dev/null | head -1)
+
+log() { logger -t archr-usbgadget "$1"; }
+
+create_gadget() {
+    local mode="${1:-ncm}"
+
+    # Load configfs
+    modprobe libcomposite 2>/dev/null
+    mount -t configfs none /sys/kernel/config 2>/dev/null
+
+    # Clean existing gadget
+    disable_gadget 2>/dev/null
+
+    mkdir -p "$GADGET_DIR"
+    cd "$GADGET_DIR" || exit 1
+
+    # Device descriptors
+    echo 0x1d6b > idVendor   # Linux Foundation
+    echo 0x0104 > idProduct  # Multifunction Composite Gadget
+    echo 0x0100 > bcdDevice
+    echo 0x0200 > bcdUSB
+
+    mkdir -p strings/0x409
+    echo "archr" > strings/0x409/serialnumber
+    echo "Arch R" > strings/0x409/manufacturer
+    echo "Arch R Gaming Console" > strings/0x409/product
+
+    mkdir -p configs/c.1/strings/0x409
+    echo "Config 1" > configs/c.1/strings/0x409/configuration
+    echo 500 > configs/c.1/MaxPower
+
+    case "$mode" in
+        ncm)
+            mkdir -p functions/ncm.usb0
+            ln -s functions/ncm.usb0 configs/c.1/
+            log "NCM gadget configured (network over USB)"
+            ;;
+        rndis)
+            mkdir -p functions/rndis.usb0
+            ln -s functions/rndis.usb0 configs/c.1/
+            log "RNDIS gadget configured (Windows network over USB)"
+            ;;
+        mass_storage)
+            mkdir -p functions/mass_storage.usb0
+            # Export /roms if mounted, otherwise /dev/null
+            if mountpoint -q /roms; then
+                ROMS_DEV=$(findmnt -no SOURCE /roms)
+                echo "$ROMS_DEV" > functions/mass_storage.usb0/lun.0/file
+                echo 1 > functions/mass_storage.usb0/lun.0/removable
+            fi
+            ln -s functions/mass_storage.usb0 configs/c.1/
+            log "Mass storage gadget configured"
+            ;;
+        *)
+            log "Unknown mode: $mode"
+            return 1
+            ;;
+    esac
+
+    # Enable gadget
+    [ -n "$UDC" ] && echo "$UDC" > UDC
+    log "USB gadget enabled (mode=$mode, udc=$UDC)"
+}
+
+disable_gadget() {
+    if [ -d "$GADGET_DIR" ]; then
+        echo "" > "$GADGET_DIR/UDC" 2>/dev/null
+
+        # Unlink functions from configs
+        for link in "$GADGET_DIR"/configs/c.1/*; do
+            [ -L "$link" ] && rm -f "$link"
+        done
+
+        # Remove functions
+        for func in "$GADGET_DIR"/functions/*; do
+            [ -d "$func" ] && rmdir "$func" 2>/dev/null
+        done
+
+        # Remove configs
+        rmdir "$GADGET_DIR"/configs/c.1/strings/0x409 2>/dev/null
+        rmdir "$GADGET_DIR"/configs/c.1 2>/dev/null
+
+        # Remove strings and gadget
+        rmdir "$GADGET_DIR"/strings/0x409 2>/dev/null
+        rmdir "$GADGET_DIR" 2>/dev/null
+
+        log "USB gadget disabled"
+    fi
+}
+
+gadget_status() {
+    if [ -d "$GADGET_DIR" ] && [ -n "$(cat "$GADGET_DIR/UDC" 2>/dev/null)" ]; then
+        echo "USB gadget: ACTIVE"
+        for func in "$GADGET_DIR"/functions/*; do
+            [ -d "$func" ] && echo "  Function: $(basename "$func")"
+        done
+    else
+        echo "USB gadget: INACTIVE"
+    fi
+}
+
+case "${1:-status}" in
+    enable)  create_gadget "${2:-ncm}" ;;
+    disable) disable_gadget ;;
+    trigger)
+        # Called by udev on cable plug — enable NCM by default
+        if [ ! -d "$GADGET_DIR" ]; then
+            create_gadget ncm
+            # Configure network interface
+            sleep 1
+            ip addr add 10.1.1.1/24 dev gadget 2>/dev/null
+            ip link set gadget up 2>/dev/null
+        fi
+        ;;
+    status)  gadget_status ;;
+    *)       echo "Usage: $0 {enable [ncm|rndis|mass_storage]|disable|trigger|status}" ;;
+esac

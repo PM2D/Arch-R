@@ -1,0 +1,75 @@
+#!/bin/bash
+# Arch R — USB/SD Auto-Mount Service
+# Mounts external storage (USB drives, SD cards) to /media/<label>
+# Triggered by udev rules on block device insertion.
+
+MOUNT_BASE="/media"
+
+log() { logger -t archr-automount "$1"; }
+
+# Find and mount all unmounted block devices with known filesystems
+mount_devices() {
+    for dev in /dev/sd[a-z]* /dev/mmcblk[2-9]p*; do
+        [ -b "$dev" ] || continue
+
+        # Skip already mounted
+        grep -q "^${dev} " /proc/mounts && continue
+
+        # Get filesystem info
+        eval "$(blkid -o export "$dev" 2>/dev/null)"
+        [ -z "$TYPE" ] && continue
+
+        # Skip internal partitions
+        case "$LABEL" in
+            BOOT|STORAGE|ROCKNIX|EFI|Recovery|RECOVERY|boot|root0|share0) continue ;;
+        esac
+
+        # Use label or UUID for mount point
+        MOUNT_POINT="$MOUNT_BASE/${LABEL:-${UUID:-$(basename "$dev")}}"
+        mkdir -p "$MOUNT_POINT"
+
+        case "$TYPE" in
+            vfat|exfat)
+                mount -t "$TYPE" -o rw,noatime,utf8,uid=1001,gid=1001 "$dev" "$MOUNT_POINT" ;;
+            ext4|ext3|ext2)
+                mount -t "$TYPE" -o rw,noatime "$dev" "$MOUNT_POINT" ;;
+            ntfs|ntfs3)
+                mount -t ntfs3 -o rw,noatime,uid=1001,gid=1001 "$dev" "$MOUNT_POINT" 2>/dev/null \
+                    || mount -t ntfs -o rw,noatime,uid=1001,gid=1001 "$dev" "$MOUNT_POINT" ;;
+            *)
+                rmdir "$MOUNT_POINT" 2>/dev/null
+                continue ;;
+        esac
+
+        if [ $? -eq 0 ]; then
+            log "Mounted $dev ($LABEL, $TYPE) at $MOUNT_POINT"
+        else
+            rmdir "$MOUNT_POINT" 2>/dev/null
+            log "Failed to mount $dev ($TYPE)"
+        fi
+
+        # Reset variables for next device
+        unset LABEL UUID TYPE
+    done
+}
+
+# Unmount removed devices
+umount_removed() {
+    for mp in "$MOUNT_BASE"/*/; do
+        [ -d "$mp" ] || continue
+        mountpoint -q "$mp" || continue
+
+        dev=$(findmnt -no SOURCE "$mp")
+        if [ ! -b "$dev" ]; then
+            umount -l "$mp" 2>/dev/null
+            rmdir "$mp" 2>/dev/null
+            log "Unmounted $mp (device removed)"
+        fi
+    done
+}
+
+case "${1:-mount}" in
+    mount)   mount_devices ;;
+    umount)  umount_removed ;;
+    *)       mount_devices ;;
+esac

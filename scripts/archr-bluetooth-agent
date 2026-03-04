@@ -1,0 +1,42 @@
+#!/bin/bash
+# Arch R — Bluetooth Auto-Pairing Agent
+# Accepts pairing requests and configures connected devices as input devices.
+# Runs as a systemd service alongside bluetoothd.
+
+log() { logger -t archr-bt-agent "$1"; }
+
+# Wait for bluetoothd to be ready
+for i in $(seq 1 30); do
+    bluetoothctl show &>/dev/null && break
+    sleep 1
+done
+
+log "Bluetooth agent starting..."
+
+# Power on and make discoverable
+bluetoothctl power on 2>/dev/null
+bluetoothctl discoverable on 2>/dev/null
+bluetoothctl pairable on 2>/dev/null
+
+# Set default agent
+bluetoothctl agent NoInputNoOutput 2>/dev/null
+bluetoothctl default-agent 2>/dev/null
+
+log "Bluetooth agent ready (NoInputNoOutput mode)"
+
+# Monitor connections and auto-trust paired devices
+while true; do
+    # Get list of paired devices
+    PAIRED=$(bluetoothctl paired-devices 2>/dev/null | awk '{print $2}')
+
+    for dev in $PAIRED; do
+        # Auto-trust paired devices
+        TRUSTED=$(bluetoothctl info "$dev" 2>/dev/null | grep "Trusted: yes")
+        if [ -z "$TRUSTED" ]; then
+            bluetoothctl trust "$dev" 2>/dev/null
+            log "Auto-trusted: $dev"
+        fi
+    done
+
+    sleep 10
+done

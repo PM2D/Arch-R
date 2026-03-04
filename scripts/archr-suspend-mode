@@ -1,0 +1,74 @@
+#!/bin/bash
+# Arch R — Suspend Mode Control
+# Sets the system suspend mode and handles power button behavior.
+#
+# Usage:
+#   archr-suspend-mode mem       — Deep sleep (S3, lowest power, full RAM retention)
+#   archr-suspend-mode freeze    — S2idle (CPU idle, faster wake, higher power)
+#   archr-suspend-mode off       — Disable suspend (power button = power off)
+#   archr-suspend-mode status    — Show current mode
+
+SLEEP_CONF="/etc/systemd/sleep.conf.d/archr.conf"
+LOGIND_CONF="/etc/systemd/logind.conf.d/fast.conf"
+
+log() { logger -t archr-suspend "$1"; }
+
+set_mode() {
+    local mode="$1"
+
+    mkdir -p "$(dirname "$SLEEP_CONF")"
+    mkdir -p "$(dirname "$LOGIND_CONF")"
+
+    case "$mode" in
+        mem|standby|freeze)
+            # Enable suspend with specified mode
+            cat > "$SLEEP_CONF" << EOF
+[Sleep]
+AllowSuspend=yes
+SuspendState=$mode
+AllowHibernation=no
+EOF
+            # Update logind to handle power button as suspend
+            sed -i 's/^HandlePowerKey=.*/HandlePowerKey=suspend/' "$LOGIND_CONF" 2>/dev/null
+            # Write state to sysfs
+            echo "$mode" > /sys/power/state 2>/dev/null || true
+            log "Suspend mode set to: $mode"
+            ;;
+        off)
+            # Disable suspend
+            cat > "$SLEEP_CONF" << EOF
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no
+EOF
+            # Power button = ignore (use PMIC power-off via long press)
+            sed -i 's/^HandlePowerKey=.*/HandlePowerKey=ignore/' "$LOGIND_CONF" 2>/dev/null
+            log "Suspend disabled"
+            ;;
+        *)
+            echo "Usage: archr-suspend-mode {mem|freeze|off|status}"
+            return 1
+            ;;
+    esac
+
+    # Reload systemd to pick up config changes
+    systemctl daemon-reload 2>/dev/null
+    systemctl restart systemd-logind 2>/dev/null
+}
+
+show_status() {
+    echo "Available states: $(cat /sys/power/state 2>/dev/null)"
+    if [ -f "$SLEEP_CONF" ]; then
+        echo "Config: $(cat "$SLEEP_CONF")"
+    else
+        echo "Config: not set (default)"
+    fi
+    POWER_KEY=$(grep "^HandlePowerKey=" "$LOGIND_CONF" 2>/dev/null | cut -d= -f2)
+    echo "Power button: ${POWER_KEY:-ignore}"
+}
+
+case "${1:-status}" in
+    mem|standby|freeze|off) set_mode "$1" ;;
+    status) show_status ;;
+    *) echo "Usage: archr-suspend-mode {mem|freeze|off|status}" ;;
+esac

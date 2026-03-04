@@ -1,0 +1,62 @@
+#!/bin/bash
+# Arch R — Factory Reset
+# Resets all user configuration to defaults.
+# Preserves ROMs and BIOS files.
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo -e "${RED}=== Arch R Factory Reset ===${NC}"
+echo ""
+echo "This will:"
+echo "  - Reset RetroArch config to defaults"
+echo "  - Reset EmulationStation config to defaults"
+echo "  - Reset audio/brightness/volume settings"
+echo "  - Remove SSH keys"
+echo "  - Remove WiFi saved networks"
+echo ""
+echo -e "${GREEN}This will NOT delete your ROMs or BIOS files.${NC}"
+echo ""
+
+# Require explicit confirmation
+if [ "$1" != "--confirm" ]; then
+    echo "To proceed, run: archr-factory-reset --confirm"
+    exit 1
+fi
+
+echo "Resetting..."
+
+# RetroArch config
+rm -rf /home/archr/.config/retroarch/retroarch.cfg
+rm -rf /home/archr/.config/retroarch/retroarch-core-options.cfg
+rm -rf /home/archr/.config/retroarch/saves/*
+rm -rf /home/archr/.config/retroarch/states/*
+rm -rf /home/archr/.config/retroarch/screenshots/*
+
+# EmulationStation config
+rm -rf /home/archr/.emulationstation/es_settings.cfg
+rm -rf /home/archr/.emulationstation/gamelists
+
+# User settings
+rm -f /home/archr/.config/archr/brightness
+rm -f /home/archr/.config/archr/volume
+
+# SSH keys
+rm -f /etc/ssh/ssh_host_*
+
+# WiFi networks
+rm -rf /etc/NetworkManager/system-connections/*
+
+# Mesa shader cache
+rm -rf /home/archr/.cache/mesa_shader_cache/*
+
+# First-boot flag — will regenerate configs on next boot
+rm -f /var/lib/archr/.first-boot-done
+
+# Fix ownership
+chown -R 1001:1001 /home/archr
+
+echo ""
+echo -e "${GREEN}Factory reset complete. Reboot to apply.${NC}"
+echo "  sudo reboot"

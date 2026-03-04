@@ -1,0 +1,15 @@
+# Arch R — Auto-mount USB drives and external SD cards
+# Triggers archr-automount.service on block device insertion.
+
+SUBSYSTEM!="block", GOTO="archr_automount_end"
+KERNEL!="sd[a-z]*|mmcblk[2-9]p*", GOTO="archr_automount_end"
+
+# Skip internal partitions
+IMPORT{builtin}="blkid"
+ENV{ID_FS_LABEL}=="BOOT|STORAGE|EFI|Recovery|RECOVERY", GOTO="archr_automount_end"
+
+# Mount on add, umount on remove
+ACTION=="add", ENV{DEVTYPE}=="partition|disk", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/systemctl restart archr-automount.service"
+ACTION=="remove", RUN+="/usr/local/bin/archr-automount umount"
+
+LABEL="archr_automount_end"

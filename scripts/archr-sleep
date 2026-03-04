@@ -1,0 +1,96 @@
+#!/bin/bash
+# Arch R — System Sleep Hook
+# Installed to /usr/lib/systemd/system-sleep/archr-sleep
+# Called by systemd before suspend (pre) and after wake (post).
+#
+# Pre-suspend: saves governors, sets powersave, unloads problem modules
+# Post-wake: reloads modules, restores governors
+
+MODULES_BAD="/etc/archr/modules.bad"
+SAVED_MODULES="/tmp/archr-sleep-modules"
+SAVED_CPU_GOV="/tmp/archr-sleep-cpu-gov"
+SAVED_GPU_GOV="/tmp/archr-sleep-gpu-gov"
+
+CPU_GOV="/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
+GPU_GOV="/sys/devices/platform/ff400000.gpu/devfreq/ff400000.gpu/governor"
+DMC_GOV="/sys/devices/platform/dmc/devfreq/dmc/governor"
+
+log() { logger -t archr-sleep "$1"; }
+
+pre_suspend() {
+    log "Pre-suspend: saving state..."
+
+    # Save current governors
+    cat "$CPU_GOV" > "$SAVED_CPU_GOV" 2>/dev/null
+    cat "$GPU_GOV" > "$SAVED_GPU_GOV" 2>/dev/null
+
+    # Set powersave governors
+    echo powersave > "$CPU_GOV" 2>/dev/null
+    echo powersave > "$GPU_GOV" 2>/dev/null
+    echo powersave > "$DMC_GOV" 2>/dev/null
+
+    # Unload problem modules (USB, WiFi)
+    if [ -f "$MODULES_BAD" ]; then
+        rm -f "$SAVED_MODULES"
+        while read -r line; do
+            # Skip comments and empty lines
+            [ -z "$line" ] && continue
+            [[ "$line" == \#* ]] && continue
+
+            for mod in $line; do
+                if lsmod | grep -q "^${mod} "; then
+                    echo "$mod" >> "$SAVED_MODULES"
+                    modprobe -r "$mod" 2>/dev/null
+                    log "Unloaded module: $mod"
+                fi
+            done
+        done < "$MODULES_BAD"
+    fi
+
+    # Stop services that conflict with suspend
+    systemctl stop archr-hotkeys.service 2>/dev/null
+    systemctl stop battery-led.service 2>/dev/null
+
+    log "Pre-suspend: done"
+}
+
+post_wake() {
+    log "Post-wake: restoring state..."
+
+    # Reload modules
+    if [ -f "$SAVED_MODULES" ]; then
+        tac "$SAVED_MODULES" | while read -r mod; do
+            modprobe "$mod" 2>/dev/null
+            log "Reloaded module: $mod"
+        done
+        rm -f "$SAVED_MODULES"
+    fi
+
+    # Restore governors
+    if [ -f "$SAVED_CPU_GOV" ]; then
+        cat "$SAVED_CPU_GOV" > "$CPU_GOV" 2>/dev/null
+        rm -f "$SAVED_CPU_GOV"
+    else
+        echo schedutil > "$CPU_GOV" 2>/dev/null
+    fi
+
+    if [ -f "$SAVED_GPU_GOV" ]; then
+        cat "$SAVED_GPU_GOV" > "$GPU_GOV" 2>/dev/null
+        rm -f "$SAVED_GPU_GOV"
+    else
+        echo simple_ondemand > "$GPU_GOV" 2>/dev/null
+    fi
+
+    echo simple_ondemand > "$DMC_GOV" 2>/dev/null
+
+    # Restart services
+    systemctl start archr-hotkeys.service 2>/dev/null
+    systemctl start battery-led.service 2>/dev/null
+
+    log "Post-wake: done"
+}
+
+case "$1" in
+    pre)  pre_suspend ;;
+    post) post_wake ;;
+esac

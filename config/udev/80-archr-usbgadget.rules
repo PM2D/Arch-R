@@ -1,0 +1,6 @@
+# Arch R — USB Gadget Mode
+# Trigger gadget activation when USB cable is plugged in.
+# Rename gadget network interface to avoid ES showing "connected" state.
+
+SUBSYSTEMS=="extcon", ACTION=="change", RUN+="/usr/local/bin/archr-usbgadget trigger"
+ACTION=="add", SUBSYSTEM=="net", ENV{DEVTYPE}=="gadget", NAME="gadget"

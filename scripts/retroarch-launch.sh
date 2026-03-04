@@ -21,14 +21,21 @@ fi
 printf '\033[2J\033[H\033[?25l\033[30;40m' > /dev/tty1 2>/dev/null
 dd if=/dev/zero of=/dev/fb0 bs=4096 count=300 2>/dev/null
 
-# Save current DAC volume before RetroArch (it may change it on exit)
-SAVED_VOL=$(amixer sget 'DAC' 2>/dev/null | grep -oE '\[.*%\]' | head -1 | tr -d '[]%')
+# Auto-detect ALSA control names (BSP: DAC/Playback Path, Mainline: Master/Playback Mux)
+if amixer sget 'Master' &>/dev/null; then
+    ALSA_VOL=Master
+    ALSA_PATH="Playback Mux"
+else
+    ALSA_VOL=DAC
+    ALSA_PATH="Playback Path"
+fi
+
+# Save current volume before RetroArch (it may change it on exit)
+SAVED_VOL=$(amixer sget "$ALSA_VOL" 2>/dev/null | grep -oE '\[.*%\]' | head -1 | tr -d '[]%')
 
 # Ensure ALSA mixer is set for speaker output
-# rk817 codec: Playback Path controls routing (SPK/HP/OFF)
-# DAC is the volume control (0-255, simple name "DAC")
-amixer -q sset 'Playback Path' SPK 2>/dev/null
-amixer -q sset 'DAC' 80% 2>/dev/null
+amixer -q sset "$ALSA_PATH" SPK 2>/dev/null
+amixer -q sset "$ALSA_VOL" 80% 2>/dev/null
 
 # Performance governor (archr has NOPASSWD sudo for perfmax/perfnorm)
 sudo /usr/local/bin/perfmax 2>/dev/null
@@ -56,9 +63,9 @@ LOGFILE="$HOME/retroarch.log"
     echo "Core: $1"
     echo "ROM: $2"
     echo "User: $(id)"
-    echo "ALSA mixer before:"
-    amixer sget 'Playback Path' 2>/dev/null | grep "Item0:"
-    echo "  DAC: ${SAVED_VOL}%"
+    echo "ALSA mixer before ($ALSA_VOL/$ALSA_PATH):"
+    amixer sget "$ALSA_PATH" 2>/dev/null | grep "Item0:"
+    echo "  $ALSA_VOL: ${SAVED_VOL}%"
     echo "DRI:"
     ls -la /dev/dri/ 2>&1
 } >> "$LOGFILE"
@@ -78,8 +85,12 @@ fi
 # Launch RetroArch
 # - Runs as archr so HOME=/home/archr → finds retroarch.cfg at ~/.config/retroarch/
 # - DRM access: /dev/dri/* already chmod 666 by emulationstation.sh
-retroarch -L "$@" >> "$LOGFILE" 2>&1
+retroarch -L "$@" >> "$LOGFILE" 2>&1 &
+RA_PID=$!
+echo "$RA_PID" > /tmp/.archr-game-pid
+wait "$RA_PID"
 ret=$?
+rm -f /tmp/.archr-game-pid
 
 # Stop input merger (ungrab devices so ES can use them again)
 if [ -n "$MERGE_PID" ]; then
@@ -89,18 +100,18 @@ fi
 
 # Restore ALSA mixer state after RetroArch exits (like dArkOS verifyaudio.sh)
 # RetroArch may modify mixer controls on exit — restore to known good state
-amixer -q sset 'Playback Path' SPK 2>/dev/null
+amixer -q sset "$ALSA_PATH" SPK 2>/dev/null
 if [ -n "$SAVED_VOL" ] && [ "$SAVED_VOL" -gt 0 ] 2>/dev/null; then
-    amixer -q sset 'DAC' "${SAVED_VOL}%" 2>/dev/null
+    amixer -q sset "$ALSA_VOL" "${SAVED_VOL}%" 2>/dev/null
 else
-    amixer -q sset 'DAC' 80% 2>/dev/null
+    amixer -q sset "$ALSA_VOL" 80% 2>/dev/null
 fi
 
 {
     echo "RetroArch exited with code: $ret"
     echo "ALSA mixer after restore:"
-    amixer sget 'Playback Path' 2>/dev/null | grep "Item0:"
-    amixer sget 'DAC' 2>/dev/null | grep -oE '\[.*%\]' | head -1
+    amixer sget "$ALSA_PATH" 2>/dev/null | grep "Item0:"
+    amixer sget "$ALSA_VOL" 2>/dev/null | grep -oE '\[.*%\]' | head -1
     echo "==="
 } >> "$LOGFILE"
 
