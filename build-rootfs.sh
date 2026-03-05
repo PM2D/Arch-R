@@ -1059,8 +1059,9 @@ SETUP_EOF
 
 chmod +x "$ROOTFS_DIR/tmp/setup.sh"
 
-# Copy libvlc stub into chroot (needed by bloat cleanup — ES links against libvlc.so.5)
-cp "$SCRIPT_DIR/scripts/libvlc-stub-aarch64.so" "$ROOTFS_DIR/tmp/libvlc-stub.so"
+# Build libvlc stub into chroot (needed by bloat cleanup — ES links against libvlc.so.5)
+aarch64-linux-gnu-gcc -shared -O2 -o "$ROOTFS_DIR/tmp/libvlc-stub.so" "$SCRIPT_DIR/scripts/vlc-stub.c"
+aarch64-linux-gnu-strip "$ROOTFS_DIR/tmp/libvlc-stub.so"
 
 # Copy modules.bad into chroot (installed by setup.sh to /etc/archr/)
 cp "$SCRIPT_DIR/config/modules.bad" "$ROOTFS_DIR/tmp/modules.bad"
