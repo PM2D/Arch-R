@@ -10,3 +10,5 @@ PKG_DEPENDS_HOST="toolchain:host"
 PKG_DEPENDS_TARGET="toolchain"
 PKG_LONGDESC="WebP codec is a library to encode and decode images in WebP format."
 PKG_TOOLCHAIN="cmake"
+
+PKG_CMAKE_OPTS_TARGET="-DBUILD_SHARED_LIBS=ON"

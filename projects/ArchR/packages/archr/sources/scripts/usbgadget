@@ -75,7 +75,24 @@ is_cable_connected() {
 # and few seconds to soft-disconnect should be OK when done in background
 # When cable is plugged, udev calls this function again, and the gadget is soft-connected.
 usb_trigger() {
+	# On RK3326 (single USB port): if an OTG adapter is connected (host mode),
+	# stop the gadget so USB devices like WiFi dongles can be detected.
+	# Check if extcon reports USB-HOST state.
 	if [[ "${HW_DEVICE}" != "RK3566" ]]; then
+		PHY_NAME=$(ls -d /sys/devices/platform/${UDC_NAME}/supplier:platform:*usb2phy 2>/dev/null | sed 's|^.*:platform:||')
+		if [ -n "${PHY_NAME}" ]; then
+			for cable in /sys/devices/platform/${PHY_NAME}/extcon/*/cable.*; do
+				cable_name="$(cat ${cable}/name 2>/dev/null)"
+				if [ "${cable_name}" = "USB-HOST" ] && grep -q 1 ${cable}/state 2>/dev/null; then
+					# OTG adapter detected, switch to host mode
+					if [ "${CURRENT_MODE}" != "disabled" ]; then
+						usb_stop
+						echo "USB_MODE=disabled" > ${GADGETCONF}
+					fi
+					return
+				fi
+			done
+		fi
 		return
 	fi
 	# do the weird stuff only when ep0 failed

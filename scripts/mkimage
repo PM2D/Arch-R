@@ -94,6 +94,9 @@ if [ "${ROOTFS_TYPE}" = "ext4" ]; then
     parted -s "${DISK}" -a min unit s mkpart primary ext4 ${ROOT_PART_START} ${ROOT_PART_END}
     parted -s "${DISK}" -a min unit s mkpart primary ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
     parted -s "${DISK}" set 1 boot on
+    # Hide root partition from desktop file managers by setting type to 0xDA (Non-FS data).
+    # The kernel still mounts it by LABEL from the boot cmdline.
+    sfdisk --part-type "${DISK}" 2 da >"${SAVE_ERROR}" 2>&1 || true
   fi
 
   # Set SYSTEM_PART_START for boot partition (used by bootloader dd and part1 merge)

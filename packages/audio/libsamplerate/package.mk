@@ -13,7 +13,7 @@ PKG_LONGDESC="A Sample Rate Converter for audio."
 PKG_TOOLCHAIN="autotools"
 
 # package specific configure options
-PKG_CONFIGURE_OPTS_TARGET="--disable-shared \
+PKG_CONFIGURE_OPTS_TARGET="--enable-shared \
                            --enable-static \
                            --datadir=/usr/share \
                            --disable-fftw \

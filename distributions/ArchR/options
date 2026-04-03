@@ -209,7 +209,7 @@
 # Partition labels for USB/SD installation media
   DISTRO_BOOTLABEL="ARCHR"
   DISTRO_ROOTLABEL="ARCHR_ROOT"
-  DISTRO_DISKLABEL="STORAGE"
+  DISTRO_DISKLABEL="ROMS"
 
 # Settings package name - blank if not required
   DISTRO_PKG_SETTINGS=""
