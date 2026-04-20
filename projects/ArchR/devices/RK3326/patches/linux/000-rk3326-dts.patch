@@ -1,5 +1,5 @@
---- a/arch/arm64/boot/dts/rockchip/px30.dtsi	2026-04-02 16:22:14.377470397 -0300
-+++ b/arch/arm64/boot/dts/rockchip/px30.dtsi	2026-04-02 16:22:14.378455687 -0300
+--- a/arch/arm64/boot/dts/rockchip/px30.dtsi	2026-04-18 00:12:46.801599300 -0300
++++ b/arch/arm64/boot/dts/rockchip/px30.dtsi	2026-04-18 00:15:35.235545979 -0300
 @@ -20,6 +20,7 @@
  	#size-cells = <2>;
  
@@ -76,22 +76,10 @@
  	pmugrf: syscon@ff010000 {
  		compatible = "rockchip,px30-pmugrf", "syscon", "simple-mfd";
  		reg = <0x0 0xff010000 0x0 0x1000>;
-@@ -1065,22 +1094,14 @@
- 	gpu_opp_table: opp-table-1 {
- 		compatible = "operating-points-v2";
- 
--		opp-200000000 {
--			opp-hz = /bits/ 64 <200000000>;
--			opp-microvolt = <950000>;
--		};
--		opp-300000000 {
--			opp-hz = /bits/ 64 <300000000>;
--			opp-microvolt = <975000>;
--		};
--		opp-400000000 {
--			opp-hz = /bits/ 64 <400000000>;
--			opp-microvolt = <1050000>;
--		};
+@@ -1077,10 +1106,14 @@
+ 			opp-hz = /bits/ 64 <400000000>;
+ 			opp-microvolt = <1050000>;
+ 		};
 -		opp-480000000 {
 -			opp-hz = /bits/ 64 <480000000>;
 +		opp-560000000 {
@@ -105,7 +93,7 @@
  	};
  
  	gpu: gpu@ff400000 {
-@@ -1091,10 +1112,25 @@
+@@ -1091,10 +1124,25 @@
  			     <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
  		interrupt-names = "job", "mmu", "gpu";
  		clocks = <&cru SCLK_GPU>;

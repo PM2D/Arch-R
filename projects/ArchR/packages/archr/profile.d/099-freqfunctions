@@ -87,6 +87,14 @@ performance() {
 ondemand() {
   set_cpu_gov ondemand
   set_dmc_gov ondemand
+  # Tune ondemand: stay at high freq longer, reduce switching overhead
+  for POLICY in $(ls /sys/devices/system/cpu/cpufreq 2>/dev/null | grep policy[0-9]); do
+    local ONDEMAND="/sys/devices/system/cpu/cpufreq/${POLICY}/ondemand"
+    if [ -d "${ONDEMAND}" ]; then
+      echo 85 > ${ONDEMAND}/up_threshold 2>/dev/null
+      echo 150 > ${ONDEMAND}/sampling_down_factor 2>/dev/null
+    fi
+  done
 }
 
 schedutil() {

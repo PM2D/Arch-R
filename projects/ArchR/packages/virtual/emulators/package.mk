@@ -22,7 +22,7 @@ LIBRETRO_CORES="81-lr a5200-lr arduous-lr atari800-lr b2-lr beetle-gba-lr beetle
                 jaxe-lr mame-lr mame2003-plus-lr mame2010-lr mame2015-lr melonds-lr melonds-ds-lr mesen-lr mgba-lr minivmac-lr       \
                 mojozork-lr mu-lr mupen64plus-lr mupen64plus-nx-lr neocd_lr nestopia-lr np2kai-lr o2em-lr opera-lr parallel-n64-lr   \
                 pcsx_rearmed-lr picodrive-lr pokemini-lr potator-lr ppsspp-lr prosystem-lr puae-lr puae2021-lr px68k-lr quasi88-lr   \
-                quicknes-lr race-lr same_cdi-lr sameboy-lr sameduck-lr scummvm-lr smsplus-gx-lr snes9x-lr snes9x2002-lr              \
+                quicknes-lr race-lr same_cdi-lr sameboy-lr sameduck-lr scummvm-lr skyemu-lr smsplus-gx-lr snes9x-lr snes9x2002-lr              \
                 snes9x2005_plus-lr snes9x2010-lr stella-lr swanstation-lr tgbdual-lr theodore-lr tic80-lr uzem-lr vba-next-lr        \
                 vbam-lr vecx-lr vice-lr vircon32-lr virtualjaguar-lr xmil-lr wasm4-lr yabasanshiro-lr"
 
@@ -38,8 +38,8 @@ case "${DEVICE}" in
   RK3326)
     [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 desmume-lr gpsp-lr pcsx_rearmed-lr"
     PKG_DEPENDS_TARGET+=" common-shaders glsl-shaders"
-    PKG_EMUS+=" box64 drastic-sa mednafen portmaster scummvmsa yabasanshiro-sa duckstation-sa"
-    LIBRETRO_CORES+=" flycast2021-lr geolith-lr uae4arm"
+    PKG_EMUS+=" box64 drastic-sa mednafen melonds-sa portmaster scummvmsa yabasanshiro-sa duckstation-sa"
+    LIBRETRO_CORES+=" flycast2021-lr geolith-lr uae4arm dolphin-lr"
     PKG_RETROARCH+=" retropie-shaders"
     ;;
   RK3399)
@@ -151,11 +151,7 @@ makeinstall_target() {
 
   ### Nintendo 3DS
   case ${DEVICE} in
-    SDM845|SM8250|SM8550|SM8650|S922X)
-      add_emu_core 3ds azahar azahar-sa true
-      add_es_system 3ds
-      ;;
-    RK3588)
+    SDM845|SM8250|SM8550|SM8650|S922X|RK3588)
       add_emu_core 3ds azahar azahar-sa true
       add_es_system 3ds
       ;;
@@ -362,6 +358,10 @@ makeinstall_target() {
   add_emu_core ios touchhle touchhle-sa true
   add_es_system ios
 
+  ### Elektronika BK
+  add_emu_core bk retroarch bk true
+  add_es_system bk
+
   ### Nintendo Famicom
   add_emu_core famicom retroarch nestopia true
   add_emu_core famicom retroarch fceumm false
@@ -418,6 +418,7 @@ makeinstall_target() {
   add_emu_core gb retroarch mgba false
   add_emu_core gb retroarch vbam false
   add_emu_core gb retroarch DoubleCherryGB false
+  add_emu_core gb retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550|SM8650)
       add_emu_core gb mednafen gb false
@@ -439,6 +440,7 @@ makeinstall_target() {
   add_emu_core gbh retroarch mgba false
   add_emu_core gbh retroarch vbam false
   add_emu_core gbh retroarch DoubleCherryGB false
+  add_emu_core gbh retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550|SM8650)
       add_emu_core gbh mednafen gb false
@@ -456,6 +458,7 @@ makeinstall_target() {
   add_emu_core gba retroarch vbam false
   add_emu_core gba retroarch vba_next false
   add_emu_core gba retroarch beetle_gba false
+  add_emu_core gba retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3566|S922X)
       add_emu_core gba retroarch gpsp false
@@ -485,6 +488,7 @@ makeinstall_target() {
   add_emu_core gbah retroarch vbam false
   add_emu_core gbah retroarch vba_next false
   add_emu_core gbah retroarch beetle_gba false
+  add_emu_core gbah retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550|SM8650)
       add_emu_core gbah retroarch gpsp false
@@ -506,6 +510,7 @@ makeinstall_target() {
   add_emu_core gbav retroarch vbam false
   add_emu_core gbav retroarch vba_next false
   add_emu_core gbav retroarch beetle_gba false
+  add_emu_core gbav retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550)
       add_emu_core gbav retroarch gpsp false
@@ -530,6 +535,7 @@ makeinstall_target() {
   add_emu_core gbc retroarch mgba false
   add_emu_core gbc retroarch vbam false
   add_emu_core gbc retroarch DoubleCherryGB false
+  add_emu_core gbc retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550|SM8650)
       add_emu_core gbc mednafen gb false
@@ -550,6 +556,7 @@ makeinstall_target() {
   add_emu_core gbch retroarch mgba false
   add_emu_core gbch retroarch vbam false
   add_emu_core gbch retroarch DoubleCherryGB false
+  add_emu_core gbch retroarch skyemu false
   case ${DEVICE} in
     H700|RK3326|RK3399|RK3566|RK3588|SM8250|SM8550|SM8650)
       add_emu_core gbch mednafen gb false
@@ -569,14 +576,16 @@ makeinstall_target() {
       add_emu_core gamecube dolphin dolphin-sa-gc false
       add_emu_core gamecube retroarch dolphin false
       install_script "Start Dolphin.sh"
-      add_es_system gamecube
       ;;
     RK3566|RK3588|S922X)
       add_emu_core gamecube dolphin dolphin-sa-gc true
       add_emu_core gamecube retroarch dolphin false
-      add_es_system gamecube
+      ;;
+    *)
+      add_emu_core gamecube retroarch dolphin true
       ;;
   esac
+  add_es_system gamecube
 
   ### Nintendo Triforce
   case ${DEVICE} in
@@ -596,18 +605,20 @@ makeinstall_target() {
       add_emu_core wiiware dolphin dolphin-sa-wii false
       add_emu_core wii retroarch dolphin false
       add_emu_core wiiware retroarch dolphin false
-      add_es_system wii
-      add_es_system wiiware
       ;;
     RK3566|RK3588|S922X)
       add_emu_core wii dolphin dolphin-sa-wii true
       add_emu_core wiiware dolphin dolphin-sa-wii true
       add_emu_core wii retroarch dolphin false
       add_emu_core wiiware retroarch dolphin false
-      add_es_system wii
-      add_es_system wiiware
+      ;;
+    *)
+      add_emu_core wii retroarch dolphin true
+      add_emu_core wiiware retroarch dolphin true
       ;;
   esac
+  add_es_system wii
+  add_es_system wiiware
 
   ### Nintendo Wii U
   case ${DEVICE} in
@@ -807,9 +818,12 @@ makeinstall_target() {
   case ${DEVICE} in
     H700|RK3326)
       add_emu_core nds drastic drastic-sa true
+      add_emu_core nds melonds melonds-sa false
       add_emu_core nds retroarch melonds false
       add_emu_core nds retroarch melondsds false
       add_emu_core nds retroarch desmume false
+      add_emu_core nds retroarch skyemu false
+      install_script "Start MelonDS.sh"
       ;;
     RK3399|RK3566|RK3588)
       add_emu_core nds drastic drastic-sa true
@@ -817,6 +831,7 @@ makeinstall_target() {
       add_emu_core nds retroarch melondsds false
       add_emu_core nds melonds melonds-sa false
       add_emu_core nds retroarch desmume false
+      add_emu_core nds retroarch skyemu false
       install_script "Start MelonDS.sh"
       ;;
     SDM845|SM8250|SM8550)
@@ -825,6 +840,7 @@ makeinstall_target() {
       add_emu_core nds retroarch melonds false
       add_emu_core nds retroarch melondsds false
       add_emu_core nds retroarch desmume false
+      add_emu_core nds retroarch skyemu false
       install_script "Start MelonDS.sh"
       ;;
     SM8650)
@@ -832,6 +848,7 @@ makeinstall_target() {
       add_emu_core nds skyemu skyemu-sa false
       add_emu_core nds retroarch melonds false
       add_emu_core nds retroarch melondsds false
+      add_emu_core nds retroarch skyemu false
       install_script "Start MelonDS.sh"
       ;;
     S922X)
@@ -839,12 +856,14 @@ makeinstall_target() {
       add_emu_core nds retroarch melonds false
       add_emu_core nds retroarch melondsds false
       add_emu_core nds melonds melonds-sa false
+      add_emu_core nds retroarch skyemu false
       install_script "Start MelonDS.sh"
       ;;
     *)
       add_emu_core nds drastic drastic-sa true
       add_emu_core nds retroarch melonds false
       add_emu_core nds retroarch melondsds false
+      add_emu_core nds retroarch skyemu false
     ;;
   esac
   add_es_system nds
@@ -853,6 +872,7 @@ makeinstall_target() {
   case ${DEVICE} in
     H700|RK3326)
       add_emu_core ndsiware retroarch melondsds true
+      add_emu_core ndsiware melonds melonds-sa false
     ;;
     *)
       add_emu_core ndsiware retroarch melondsds true
