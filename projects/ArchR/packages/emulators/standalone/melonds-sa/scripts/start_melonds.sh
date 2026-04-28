@@ -164,15 +164,20 @@ else
     ROM="${1}"
 fi
 
-# QT platform - default to xcb
-export QT_QPA_PLATFORM=xcb
+# QT platform - use wayland on Wayland compositors, xcb otherwise
+if [ -n "${WAYLAND_DISPLAY}" ]; then
+    export QT_QPA_PLATFORM=wayland
+else
+    export QT_QPA_PLATFORM=xcb
+fi
 
-# QT platform - some device / driver combinations need wayland
-case ${HW_DEVICE} in
-    RK3566|RK3588|S922X)
-        [[ $(/usr/bin/gpudriver) == "libmali" ]] && export QT_QPA_PLATFORM=wayland
-    ;;
-esac
+# Qt requires UTF-8 locale
+export LC_ALL=en_US.UTF-8 2>/dev/null || export LC_ALL=C.UTF-8
+
+# Performance: disable Qt animations, reduce rendering overhead
+export QT_QPA_NO_SIGNAL_SPY=1
+export QSG_RENDER_LOOP=basic
+export QT_ENABLE_HIGHDPI_SCALING=0
 
 @PANFROST@
 @HOTKEY@
@@ -181,10 +186,23 @@ esac
 #Generate a new MelonDS.toml each run (temporary hack)
 rm -rf "${CONF_DIR}/melonDS.toml"
 
+# Force JIT and software renderer for max performance on weak SoCs
+sed -i '/^JIT_Enable=/c\JIT_Enable=1' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^3DRenderer=/c\3DRenderer=0' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^Threaded3D=/c\Threaded3D=1' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^ScreenUseGL=/c\ScreenUseGL=0' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^ShowOSD=/c\ShowOSD=0' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^AudioInterp=/c\AudioInterp=0' "${CONF_DIR}/${MELONDS_INI}"
+sed -i '/^AudioBitrate=/c\AudioBitrate=0' "${CONF_DIR}/${MELONDS_INI}"
+
 #Retroachievements
 /usr/bin/cheevos_melonds.sh
 
-#Run MelonDS emulator
+#Run MelonDS emulator - set CPU to performance for max speed
+if [ -w "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor" ]; then
+    echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
+fi
+
 $GPTOKEYB "melonDS" -c "${CONF_DIR}/melonDS.gptk" &
 ${EMUPERF} /usr/bin/melonDS -f "${ROM}"
 kill -9 "$(pidof gptokeyb)"

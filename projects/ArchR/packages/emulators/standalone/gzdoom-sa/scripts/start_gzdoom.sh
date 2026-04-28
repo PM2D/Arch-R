@@ -85,4 +85,4 @@ else
 fi
 
 cd "${RUN_DIR}"
-echo ${params} | ${EMUPERF} xargs /usr/bin/gzdoom >/var/log/gzdoom.log 2>&1
+echo ${params} | ${EMUPERF} xargs /usr/bin/gzdoom +gl_es 1 +vid_preferbackend 3 +cl_capfps 0 >/var/log/gzdoom.log 2>&1

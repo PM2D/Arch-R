@@ -40,21 +40,36 @@ function start_ms() {
     ;;
   esac
 
-  for GAME_PATH in internal external
-  do
-    if [ ! -d "/storage/games-${GAME_PATH}/roms" ]
-    then
-      log $0 "Create /storage/games-${GAME_PATH}/roms."
-      mkdir -p "/storage/games-${GAME_PATH}/roms"
-    fi
-  done
+  # Ensure roms directory exists directly on the partition
+  if [ ! -d "/storage/roms" ]; then
+    mkdir -p "/storage/roms"
+  fi
+
+  # Migrate: if games-internal/roms has content but roms/ is empty, move it
+  if [ -d "/storage/games-internal/roms" ] && [ "$(ls -A /storage/games-internal/roms 2>/dev/null)" ] && [ ! "$(ls -A /storage/roms 2>/dev/null)" ]; then
+    log $0 "Migrating ROMs from games-internal/roms/ to roms/"
+    mv /storage/games-internal/roms/* /storage/roms/ 2>/dev/null
+    rmdir /storage/games-internal/roms 2>/dev/null
+    ln -sf /storage/roms /storage/games-internal/roms 2>/dev/null
+  fi
+
+  # Backwards compat: symlink games-internal/roms → roms if not already
+  if [ ! -L "/storage/games-internal/roms" ] && [ ! -d "/storage/games-internal/roms" ]; then
+    mkdir -p /storage/games-internal
+    ln -sf /storage/roms /storage/games-internal/roms
+  fi
+
+  # Ensure external games dir exists for dual-SD support
+  if [ ! -d "/storage/games-external/roms" ]; then
+    mkdir -p "/storage/games-external/roms"
+  fi
 
   MS_ENABLED=$(get_setting system.merged.storage)
   if [ -e "/storage/.ms_unsupported" ] || \
      [ ! "${MS_ENABLED}" = 1 ]
   then
-    log $0 "Executing bind mount of ${MOUNT_PATH} to ${MS_PATH}"
-    mount --bind ${MOUNT_PATH}/roms ${MS_PATH}
+    # Single SD: /storage/roms is used directly (no bind mount needed)
+    log $0 "Using /storage/roms directly"
   else
     log $0 "Enabling merged storage of /storage/games-${LOWER} and /storage/games-${UPPER} to ${MS_PATH}."
 

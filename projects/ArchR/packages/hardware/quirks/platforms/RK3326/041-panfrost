@@ -8,3 +8,7 @@ export PAN_MESA_DEBUG=forcepack
 
 # Skip GL error checking for better performance in emulators
 export MESA_NO_ERROR=1
+
+# Persistent shader cache - avoids recompilation on every launch
+export MESA_SHADER_CACHE_DIR=/storage/.cache/mesa_shader_cache
+export MESA_SHADER_CACHE_MAX_SIZE=128MB
