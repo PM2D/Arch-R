@@ -42,11 +42,14 @@ else
   unset EMUPERF
 fi
 
-  #Auto Frame Skip
-	if [ "${ASKIP}" = "1" ]; then
-		sed -i '/AutoFrameSkip =/c\AutoFrameSkip = True' ${CONF_DIR}/${PPSSPP_INI}
-	else
+  #Auto Frame Skip — default ON when no explicit setting. RK3326 cannot
+  #sustain 60fps in heavier PSP titles; without auto-skip the user sees
+  #15fps stutter instead of a smooth 25-30. Users that prefer no skipping
+  #can flip the per-platform / per-game setting to "0".
+	if [ "${ASKIP}" = "0" ]; then
 		sed -i '/^AutoFrameSkip =/c\AutoFrameSkip = False' ${CONF_DIR}/${PPSSPP_INI}
+	else
+		sed -i '/AutoFrameSkip =/c\AutoFrameSkip = True' ${CONF_DIR}/${PPSSPP_INI}
         fi
 
   #Graphics Backend
@@ -120,5 +123,11 @@ ARG=${1//[\\]/}
 # Panfrost optimization: forcepack reduces draw call overhead on Mali-G31
 export PAN_MESA_DEBUG=forcepack
 export MESA_NO_ERROR=1
+# Mesa GL command thread: PPSSPP issues many small GL calls per frame
+# (sprite/draw bursts) and the standalone build keeps render and CPU on
+# separate threads internally. Letting Mesa marshal GL on its own
+# thread cuts per-call dispatch latency on Cortex-A35. See
+# docs/mesa-glthread-matrix.md.
+export MESA_GLTHREAD=true
 
 ${EMUPERF} ppsspp --pause-menu-exit "${ARG}"

@@ -98,4 +98,5 @@ export LD_PRELOAD="/usr/lib/libdrastouch.so"
 export SDL_TOUCH_MOUSE_EVENTS="0"
 export DSHOOK_MIC_THRESH="${MICTHRESH}"
 ./drastic "$1"
-kill -9 $(pidof gptokeyb)
+_gptokeyb_pid="$(pidof gptokeyb 2>/dev/null)"
+[ -n "${_gptokeyb_pid}" ] && kill -9 ${_gptokeyb_pid}

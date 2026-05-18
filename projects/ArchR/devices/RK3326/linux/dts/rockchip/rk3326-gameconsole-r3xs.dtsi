@@ -261,7 +261,7 @@
 			vdd_arm: DCDC_REG2 {
 				regulator-name = "vdd_arm";
 				regulator-min-microvolt = <950000>;
-				regulator-max-microvolt = <1350000>;
+				regulator-max-microvolt = <1450000>;
 				regulator-ramp-delay = <6001>;
 				regulator-always-on;
 				regulator-boot-on;

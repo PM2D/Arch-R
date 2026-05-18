@@ -1,0 +1,31 @@
+From: ArchR <noreply@archr-linux>
+Subject: [PATCH] archr-joypad: bind to "rocknix-joypad" compatible
+
+ROCKNIX's overlay_server produces DTBOs whose MyMini joypad variant
+fragment sets:
+
+    compatible = "rocknix-joypad";
+
+If a user flashes ArchR and applies a ROCKNIX-generated overlay, the
+joypad node fails to bind because ArchR's MyMini-style driver only
+registers under "archr-joypad" / "odroidgo3-joypad". The hardware is
+identical and the driver code is the same lineage, so we add the
+ROCKNIX compatible string to the match table — controls then come up
+with no further changes.
+
+The arch-r.io overlay generator already emits both compatibles in a
+stringlist, so its DTBOs always worked on ArchR. This patch is for
+the third-party / ROCKNIX-site case where only "rocknix-joypad" is
+present.
+
+--- a/archr-joypad.c
++++ b/archr-joypad.c
+@@ -640,6 +640,7 @@
+ static const struct of_device_id joypad_of_match[] = {
+ 	{ .compatible = "archr-joypad", },
+ 	{ .compatible = "odroidgo3-joypad", },
++	{ .compatible = "rocknix-joypad", },
+ 	{},
+ };
+
+

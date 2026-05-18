@@ -65,22 +65,54 @@ function start_ms() {
   fi
 
   MS_ENABLED=$(get_setting system.merged.storage)
+  if [ "${1}" = "internal" ]
+  then
+    # No external SD detected — /storage/roms (the real internal ROMs
+    # directory) is already the right thing for EmulationStation.
+    log $0 "No external SD; /storage/roms used directly"
+    return 0
+  fi
+
   if [ -e "/storage/.ms_unsupported" ] || \
      [ ! "${MS_ENABLED}" = 1 ]
   then
-    # Single SD: /storage/roms is used directly (no bind mount needed)
-    log $0 "Using /storage/roms directly"
+    # External SD present but overlay isn't usable (FAT/exFAT/NTFS) or
+    # merged storage was disabled by the user. Bind-mount the external
+    # roms over /storage/roms so ES sees them. The internal /storage/roms
+    # content is shadowed for as long as the external SD is mounted; it
+    # comes back next boot if the user pulls the card.
+    if [ -d "/storage/games-external/roms" ]
+    then
+      log $0 "Bind-mounting /storage/games-external/roms over ${MS_PATH}"
+      mount --bind /storage/games-external/roms ${MS_PATH}
+    else
+      log $0 "External SD has no roms/ directory; leaving /storage/roms intact"
+    fi
   else
-    log $0 "Enabling merged storage of /storage/games-${LOWER} and /storage/games-${UPPER} to ${MS_PATH}."
+    log $0 "Enabling merged storage of games-${LOWER} and games-${UPPER} on ${MS_PATH}."
 
-    for DIR in /storage/games-${UPPER}/.tmp/games-workdir /storage/games-${LOWER}/roms /storage/games-${UPPER}/roms
+    # `LOWER`/`UPPER` may refer to "internal" — which now lives at
+    # /storage/roms directly. Resolve "internal" to the real /storage/roms
+    # path; bind-mount it to a working location so overlayfs doesn't try
+    # to use the same path as both lowerdir and mount point (which would
+    # fail with -EBUSY).
+    local LOWER_DIR UPPER_DIR
+    [ "${LOWER}" = "internal" ] && LOWER_DIR="/storage/.games-internal-bind/roms" || LOWER_DIR="/storage/games-${LOWER}/roms"
+    [ "${UPPER}" = "internal" ] && UPPER_DIR="/storage/.games-internal-bind/roms" || UPPER_DIR="/storage/games-${UPPER}/roms"
+
+    if [ "${LOWER}" = "internal" ] || [ "${UPPER}" = "internal" ]
+    then
+      mkdir -p /storage/.games-internal-bind/roms
+      mountpoint -q /storage/.games-internal-bind/roms || \
+        mount --bind /storage/roms /storage/.games-internal-bind/roms
+    fi
+
+    for DIR in /storage/games-${UPPER}/.tmp/games-workdir "${LOWER_DIR}" "${UPPER_DIR}"
     do
-      if [ ! -d "${DIR}" ]
-      then
-        mkdir -p "${DIR}"
-      fi
+      [ -d "${DIR}" ] || mkdir -p "${DIR}"
     done
-    mount overlay -t overlay -o lowerdir=/storage/games-${LOWER}/roms,upperdir=/storage/games-${UPPER}/roms,workdir=/storage/games-${UPPER}/.tmp/games-workdir ${MS_PATH}
+
+    mount overlay -t overlay -o lowerdir=${LOWER_DIR},upperdir=${UPPER_DIR},workdir=/storage/games-${UPPER}/.tmp/games-workdir ${MS_PATH}
   fi
 }
 

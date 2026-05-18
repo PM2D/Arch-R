@@ -146,8 +146,14 @@ fi
 # Panfrost optimization for Mali-G31
 export PAN_MESA_DEBUG=forcepack
 export MESA_NO_ERROR=1
+# Mesa GL command thread: Flycast already runs GL in a worker thread
+# (rend.ThreadedRendering=1) and is GPU-bound on RK3326. Marshalling GL
+# calls into Mesa's own thread amortises the per-call dispatch cost on a
+# single-issue Cortex-A35. See docs/mesa-glthread-matrix.md.
+export MESA_GLTHREAD=true
 
 #Run flycast emulator
 $GPTOKEYB "flycast" -c "${CONF_DIR}/flycast.gptk" &
 ${EMUPERF} /usr/bin/flycast "${1}"
-kill -9 "$(pidof gptokeyb)"
+_gptokeyb_pid="$(pidof gptokeyb 2>/dev/null)"
+[ -n "${_gptokeyb_pid}" ] && kill -9 ${_gptokeyb_pid}

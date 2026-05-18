@@ -154,8 +154,15 @@ post_makeinstall_target() {
 
   safe_remove ${INSTALL}/usr/lib/systemd/system/systemd-journald-audit.socket
 
-  # adjust systemd-hwdb-update (we have read-only /etc).
-  sed '/^ConditionNeedsUpdate=.*$/d' -i ${INSTALL}/usr/lib/systemd/system/systemd-hwdb-update.service
+  # Pre-build hwdb.bin at image creation so systemd-hwdb-update.service
+  # doesn't have to rebuild it on every boot (was costing ~4.4s in
+  # systemd-analyze blame). The file format is arch-independent so the
+  # host's systemd-hwdb is safe to use. The override.conf in
+  # system.d/systemd-hwdb-update.service.d makes the service a no-op at
+  # runtime; this step ensures the binary db is present for udev.
+  if command -v systemd-hwdb >/dev/null; then
+    systemd-hwdb --usr --root=${INSTALL} update || true
+  fi
 
   # remove nspawn
   safe_remove ${INSTALL}/usr/bin/systemd-nspawn
@@ -319,5 +326,8 @@ post_install() {
   enable_service systemd-timesyncd.service
   enable_service systemd-timesyncd-setup.service
   enable_service systemd-resolved.service
-  enable_service debug-shell.service
+  # debug-shell.service is for emergency root access via tty9 — keeping it
+  # enabled in production wastes RAM (a getty-like process) and exposes a
+  # passwordless root shell. Disable by default; users that want it can
+  # enable from settings.
 }

@@ -15,6 +15,85 @@ get_current_driver() {
 }
 
 
+GPUDRIVER_LOG="/storage/.config/gpudriver.log"
+
+# Append a one-line tagged entry to the persistent log. We keep this on
+# /storage so it survives across reboots — the most common diagnostic
+# need is "I picked panfrost and the system came up in libmali", which
+# is invisible at boot otherwise.
+log_event() {
+  local msg="$1"
+  mkdir -p "$(dirname "${GPUDRIVER_LOG}")" 2>/dev/null
+  echo "$(date '+%Y-%m-%d %H:%M:%S') gpudriver: ${msg}" >>"${GPUDRIVER_LOG}" 2>/dev/null
+  logger -t gpudriver "${msg}" 2>/dev/null
+}
+
+# Verify the GPU node ended up bound to the requested kernel driver AND
+# that the display chain is alive. A successful modprobe doesn't always
+# mean the driver attached to the hardware (mismatched compatible,
+# regulator fail), and even a bound driver doesn't always mean the
+# panel came up (panfrost can bind cleanly while the DSI bridge fails
+# on a clone variant we haven't characterized, leaving a black screen).
+# We treat both cases as a failure so the alternate driver gets a
+# chance.
+#
+# When the check fails we drop the failure reason + the relevant dmesg
+# tail to /storage/.config/gpudriver.log so users reporting "panfrost
+# doesn't boot" can hand us actionable data instead of a black screen.
+gpu_is_bound() {
+  local driver="$1"
+  local connector status
+  local have_card=0 have_display=0 have_bind=0
+
+  # Give the kernel a beat to attach. Without this we frequently raced
+  # the bind on slow microSD boots and triggered a false fallback.
+  for _wait in 1 2 3 4 5; do
+    for c in /sys/class/drm/card[0-9]*; do
+      [ -e "$c" ] && have_card=1
+    done
+    [ $have_card -eq 1 ] && break
+    sleep 0.2
+  done
+
+  # The driver-specific sysfs node tells us the kernel actually attached
+  # the requested driver to the GPU platform device — not just that
+  # *some* DRM card exists. rockchip-vop creates card0 even without any
+  # GPU driver, so checking only /sys/class/drm is not enough.
+  case "${driver}" in
+    panfrost)
+      for g in /sys/bus/platform/drivers/panfrost/[a-f0-9]*.gpu; do
+        [ -e "$g" ] && have_bind=1
+      done
+      ;;
+    libmali)
+      # mali_kbase exposes /dev/mali0 once bound.
+      [ -e /dev/mali0 ] && have_bind=1
+      ;;
+  esac
+
+  # At least one DRM connector must report "connected". DSI panels on
+  # rk3326 report status via /sys/class/drm/cardN-DSI-1/status. If no
+  # connector ever becomes connected, the panel chain is dead and the
+  # user is looking at a black screen no matter what we do here, so
+  # signal failure and let the caller try the other driver.
+  for connector in /sys/class/drm/card[0-9]*-*/status; do
+    [ -e "$connector" ] || continue
+    read -r status <"$connector" 2>/dev/null
+    [ "$status" = "connected" ] && have_display=1 && break
+  done
+
+  if [ $have_card -eq 1 ] && [ $have_bind -eq 1 ] && [ $have_display -eq 1 ]; then
+    log_event "${driver} bound OK (card=1 bind=1 display=1)"
+    return 0
+  fi
+
+  log_event "${driver} bind check FAILED (card=${have_card} bind=${have_bind} display=${have_display})"
+  # Last lines mentioning the driver, so the failure mode is recoverable
+  # from /storage without needing a serial console.
+  dmesg 2>/dev/null | grep -iE "${driver}|mali|gpu@ff400000|panfrost" | tail -20 >>"${GPUDRIVER_LOG}" 2>/dev/null
+  return 1
+}
+
 # When loading a driver, do two things:
 #   * ensure needed driver is loaded and other is not
 #   * ensure graphics related libs are overridden (or not)
@@ -23,7 +102,7 @@ load_driver() {
 
   case ${DRIVER_TO_LOAD} in
     "libmali")
-      modprobe -r @PAN@
+      modprobe -r @PAN@ 2>/dev/null
       modprobe mali_kbase
 
       # Bind-mount mali GLES libraries over mesa if not already done.
@@ -42,17 +121,37 @@ load_driver() {
       done
       ;;
     "panfrost")
-      modprobe -r mali_kbase
+      modprobe -r mali_kbase 2>/dev/null
       modprobe @PAN@
 
+      # Reverse every bind the libmali path did. Order matters: undo the
+      # libEGL/libGLESv2/etc. binds from /usr/lib/mali first, then the
+      # /dev/null binds on libGL.so (mesa needs that path to exist), and
+      # finally the panfrost vulkan ICD masks. Missing any of these
+      # leaves apps opening /dev/null where libGL.so should be, which is
+      # what was making the system "not boot" for users picking panfrost
+      # from the UI: kernel binds cleanly, but every Mesa GL app crashes
+      # on dlopen because libGL.so is shadowed.
       mount | grep -q "on /usr/lib/libEGL.so" && find /usr/lib/mali -type f -exec bash -c 'lib={}; umount ${lib/\/mali\//\/}' ';'
       if [ -d /usr/lib/glesonly ]; then
         mount | grep -q "on /usr/lib/libSDL2" && find /usr/lib/glesonly -type f -exec bash -c 'lib={}; umount ${lib/\/glesonly\//\/}' ';'
       fi
 
-      # Mask mali Vulkan ICD so the loader only finds panfrost
+      # Restore real libGL.so on both archs. These are bound to /dev/null
+      # by the libmali path so vanilla GL apps cannot pick the wrong
+      # library; on panfrost we WANT Mesa's libGL to be visible.
+      mount | grep -q "on /usr/lib/libGL.so"   && umount /usr/lib/libGL.so   2>/dev/null
+      mount | grep -q "on /usr/lib32/libGL.so" && umount /usr/lib32/libGL.so 2>/dev/null
+
+      # Unmask panfrost Vulkan ICD entries that the libmali path masked,
+      # then mask the mali ICD so the loader picks up panfrost only.
+      for icd in /usr/share/vulkan/icd.d/panfrost_icd.*.json; do
+        [ -f "${icd}" ] || continue
+        mount | grep -q "on ${icd}" && umount "${icd}" 2>/dev/null
+      done
       [ -f /usr/share/vulkan/icd.d/mali.json ] && \
-        mount --bind /dev/null /usr/share/vulkan/icd.d/mali.json
+        ( mount | grep -q "on /usr/share/vulkan/icd.d/mali.json" || \
+          mount --bind /dev/null /usr/share/vulkan/icd.d/mali.json )
       ;;
     *)
       exit 3
@@ -67,7 +166,26 @@ case "$1" in
     ;;
   "--start")
     get_current_driver
+    log_event "boot: selected driver=${CONFDRIVER}"
     load_driver ${CONFDRIVER}
+    # If the requested driver didn't actually bind, fall back to the
+    # other one so the user gets a graphical system either way. Mali-G31
+    # on RK3326 is normally driven by libmali; if mali_kbase decides the
+    # regulator/clock state is bad it silently fails to bind, leaving a
+    # composited system with software rasterization that crawls. Try the
+    # alternate driver instead of letting the user think their device is
+    # just slow.
+    if ! gpu_is_bound "${CONFDRIVER}"; then
+      ALT="libmali"
+      [ "${CONFDRIVER}" = "libmali" ] && ALT="panfrost"
+      log_event "${CONFDRIVER} did not bind to GPU; falling back to ${ALT}"
+      load_driver "${ALT}" 2>/dev/null
+      if gpu_is_bound "${ALT}"; then
+        log_event "fallback to ${ALT} succeeded"
+      else
+        log_event "fallback to ${ALT} ALSO FAILED — system will run software-rendered"
+      fi
+    fi
     ;;
   "libmali")
     set_setting ${GPU_DRIVER_SETTING_KEY} $1

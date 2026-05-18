@@ -168,3 +168,8 @@ packages/multimedia/intel-vaapi-driver/
 packages/multimedia/media-driver/
 packages/multimedia/gmmlib/
 packages/sysutils/open-vm-tools/
+
+
+#other
+docs/*
+bench-results/

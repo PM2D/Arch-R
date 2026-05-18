@@ -1,6 +1,7 @@
 [Unit]
 Description=Start SyncThing
 After=archr.service
+ConditionPathExists=/storage/.cache/services/syncthing.conf
 
 [Service]
 Type=simple

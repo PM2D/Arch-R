@@ -669,6 +669,12 @@ static void generic_panel_remove(struct mipi_dsi_device *dsi)
 
 static const struct of_device_id generic_panel_of_match[] = {
     { .compatible = "archr,generic-dsi" },
+    /* Also bind to overlays produced by ROCKNIX (overlay_server, nightly
+     * builds, dtbo-overlay branch) so users can flash ArchR with a DTBO
+     * generated upstream and have the panel come up. The init sequence
+     * and panel_description format are identical between the two — only
+     * the compatible string differs. */
+    { .compatible = "rocknix,generic-dsi" },
     { /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, generic_panel_of_match);

@@ -3,25 +3,35 @@
 # Copyright (C) 2024 JELOS (https://github.com/JustEnoughLinuxOS)
 # Copyright (C) 2026 ArchR (https://github.com/archr-linux/Arch-R)
 
-BOOST_FILE="/sys/devices/system/cpu/cpufreq/boost"
-POLICY="/sys/devices/system/cpu/cpufreq/policy0"
+# Toggle the kernel cpufreq turbo flag globally and pin scaling_max_freq
+# accordingly. Called by the ES "Enable CPU Overclock" switch and by the
+# 095-turbo-mode autostart at boot from the persisted setting.
+#
+# When OFF: cpufreq/boost=0 → turbo OPP (1512 MHz) is hidden from the
+#           freq table; governors top out at 1416 MHz.
+# When ON:  cpufreq/boost=1 → turbo OPP becomes available; max freq is
+#           pinned to it via scaling_available_frequencies (NOT
+#           cpuinfo_max_freq, which on ARM cpufreq-dt doesn't reflect
+#           boost OPPs even after boost=1).
+#
+# Governor is intentionally left alone — runemu.sh switches to
+# performance during gameplay, idle/menu stays on ondemand. Forcing
+# performance here would drain battery in the menu.
 
-# Get the actual max frequency supported by hardware
-MAX_FREQ=$(cat "${POLICY}/cpuinfo_max_freq" 2>/dev/null)
+. /etc/profile.d/001-functions
+. /etc/profile.d/099-freqfunctions
+
+BOOST_FILE="/sys/devices/system/cpu/cpufreq/boost"
 
 case $1 in
   disable)
-    echo "0" > "${BOOST_FILE}" 2>/dev/null
-    echo "performance" > "${POLICY}/scaling_governor" 2>/dev/null
+    [ -e "${BOOST_FILE}" ] && echo 0 > "${BOOST_FILE}" 2>/dev/null
+    set_cpu_max_freq highest
     set_setting enable.turbo-mode 0
-  ;;
+    ;;
   enable)
-    echo "1" > "${BOOST_FILE}" 2>/dev/null
-    # Set governor to performance and max freq to hardware maximum
-    echo "performance" > "${POLICY}/scaling_governor" 2>/dev/null
-    if [ -n "${MAX_FREQ}" ]; then
-      echo "${MAX_FREQ}" > "${POLICY}/scaling_max_freq" 2>/dev/null
-    fi
+    [ -e "${BOOST_FILE}" ] && echo 1 > "${BOOST_FILE}" 2>/dev/null
+    set_cpu_max_freq highest
     set_setting enable.turbo-mode 1
-  ;;
+    ;;
 esac

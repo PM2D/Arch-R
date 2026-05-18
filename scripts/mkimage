@@ -133,18 +133,26 @@ dd if=/dev/zero of="${IMG_TMP}/part2.ext4" bs=512 count="${STORAGE_PART_COUNT}" 
 
 # create filesystem on part2
 echo "image: creating filesystem on part2..."
-mke2fs -F -q -t ext4 -T ext4 -O ^orphan_file -m 0 "${IMG_TMP}/part2.ext4"
-tune2fs -L "${DISTRO_DISKLABEL}" -U ${UUID_STORAGE} "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
-e2fsck -n "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
+# Use the toolchain-built e2fsprogs binaries (matching the target's version)
+# rather than whatever lives on the build container's PATH. Mismatched
+# versions are observable on-device: a fs created with a newer mke2fs/tune2fs
+# may be flagged as "Filesystem corruption" by the older e2fsck baked into
+# the initramfs, even though the host considers it clean. See:
+# https://github.com/archr-linux/Arch-R/... — fix for 1.47.4 (host) vs
+# 1.47.3 (target) divergence that made ARCHR_ROOT fail to mount on first
+# boot of the 20260514 build.
+${TOOLCHAIN}/sbin/mke2fs -F -q -t ext4 -T ext4 -O ^orphan_file -m 0 "${IMG_TMP}/part2.ext4"
+${TOOLCHAIN}/sbin/tune2fs -L "${DISTRO_DISKLABEL}" -U ${UUID_STORAGE} "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
+${TOOLCHAIN}/sbin/e2fsck -n "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
 sync
 
 # add resize mark
 mkdir "${IMG_TMP}/part2.fs"
 touch "${IMG_TMP}/part2.fs/.please_resize_me"
 echo "image: populating filesystem on part2..."
-populatefs -U -d "${IMG_TMP}/part2.fs" "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
+${TOOLCHAIN}/bin/populatefs -U -d "${IMG_TMP}/part2.fs" "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
 sync
-e2fsck -n "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
+${TOOLCHAIN}/sbin/e2fsck -n "${IMG_TMP}/part2.ext4" >"${SAVE_ERROR}" 2>&1 || show_error
 
 # merge part2 into disk image
 echo "image: merging part2 into disk image..."
@@ -154,7 +162,7 @@ dd if="${IMG_TMP}/part2.ext4" of="${DISK}" bs=512 seek="${STORAGE_PART_START}" c
 if [ "${ROOTFS_TYPE}" = "ext4" ]; then
   echo "image: preparing root ext4 partition..."
   # Set label and UUID on the ext4 rootfs image
-  tune2fs -L "${DISTRO_ROOTLABEL}" -U ${UUID_ROOT} "${RELEASE_DIR}/target/SYSTEM" >"${SAVE_ERROR}" 2>&1 || show_error
+  ${TOOLCHAIN}/sbin/tune2fs -L "${DISTRO_ROOTLABEL}" -U ${UUID_ROOT} "${RELEASE_DIR}/target/SYSTEM" >"${SAVE_ERROR}" 2>&1 || show_error
 
   # Write root ext4 image into disk at ROOT_PART_START
   echo "image: merging root ext4 into disk image..."
@@ -355,7 +363,10 @@ elif [ "${BOOTLOADER}" = "qcom-abl" ]; then
 
 fi # bootloader
 
-# run fsck
+# run fsck (auto-repair so any boot-sector / backup divergence in the
+# freshly-formatted FAT is fixed before we cement the image — otherwise
+# dosfsck on the device flags it on every boot and U-Boot has been seen
+# reading the inconsistent backup intermittently)
 echo "image: checking filesystem on part1..."
 sync
 fsck.fat -n "${IMG_TMP}/part1.fat" >"${SAVE_ERROR}" 2>&1 || show_error
@@ -373,7 +384,7 @@ if [ "${PROJECT}" = "Generic" ]; then
   mcopy "${IMG_TMP}/syslinux.cfg" :: >"${SAVE_ERROR}" 2>&1 || show_error
   mcopy "${IMG_TMP}/grub.cfg" ::/EFI/BOOT >"${SAVE_ERROR}" 2>&1 || show_error
   sync
-  # run fsck
+  # run fsck (auto-repair, see comment above)
   echo "image: checking filesystem on part1..."
   fsck.fat -n "${IMG_TMP}/part1.fat" >"${SAVE_ERROR}" 2>&1 || show_error
   # merge modified part1 into tmp disk image

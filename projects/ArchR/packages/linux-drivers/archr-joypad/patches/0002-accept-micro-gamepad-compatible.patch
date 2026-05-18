@@ -1,0 +1,36 @@
+From: ArchR <noreply@archr-linux>
+Subject: [PATCH] archr-joypad: bind to "micro,gamepad" compatible
+
+Some R36S clone variants (notably a V12-silkscreen / G80CA-1.3-sticker
+hybrid surfacing in Discord reports) ship a vendor DTB with
+'compatible = "micro,gamepad"' on the joypad node, instead of
+'odroidgo3-joypad'. The wire format is multi-ADC (4 separate saradc
+channels) plus a flat key-gpios array, similar enough to our
+archr-joypad multi-ADC path that adding the compat string lets the
+driver bind and start reading io-channels.
+
+Caveats observed in the wild:
+
+* io-channel-names on these boards use "button0".."button3" instead of
+  our usual "key-LX/LY/RX/RY". The kernel's iio framework looks up the
+  channel by index in io-channel-names, so the bind itself succeeds;
+  what may need flipping per board is the axis mapping (see the
+  'abs-left-first' property and the mapping_r_l / mapping_l_r arrays
+  in joypad_adc_setup).
+* The vendor DTB encodes GPIO buttons as a single flat 'key-gpios'
+  array (18 entries on the boards we have seen) rather than the
+  individual swN { gpios = ... } child nodes our driver parses today.
+  The analog sticks should come up with this patch; the GPIO buttons
+  still need either a runtime translation in an overlay or a driver
+  extension. That is tracked separately; this patch closes the bind
+  failure so users at least have the sticks working.
+
+--- a/archr-joypad.c
++++ b/archr-joypad.c
+@@ -642,6 +642,7 @@
+ 	{ .compatible = "archr-joypad", },
+ 	{ .compatible = "odroidgo3-joypad", },
+ 	{ .compatible = "rocknix-joypad", },
++	{ .compatible = "micro,gamepad", },
+ 	{},
+ };

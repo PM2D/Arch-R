@@ -1,7 +1,9 @@
 [Unit]
 Description=ArchR Memory Manager
-After=local-fs.target
-DefaultDependencies=no
+# Run AFTER /storage is mountable so we can read /storage/.config/swap.conf
+# for user overrides. RequiresMountsFor pulls in the mount automatically.
+After=local-fs.target archr-automount.service
+RequiresMountsFor=/storage
 Conflicts=shutdown.target
 Before=shutdown.target
 
@@ -14,4 +16,9 @@ ExecStop=/usr/bin/archr-memory-manager --stop
 RemainAfterExit=yes
 
 [Install]
-WantedBy=basic.target
+# Was WantedBy=basic.target, which put the ~3.9s modprobe zram + udev wait
+# + sysctl tuning loop on the critical path before sockets.target →
+# sysinit.target. Moving to multi-user.target keeps swap+KSM+VM tuning
+# functional (it still happens before EmulationStation starts) but
+# unblocks sysinit/basic for the rest of the boot.
+WantedBy=multi-user.target

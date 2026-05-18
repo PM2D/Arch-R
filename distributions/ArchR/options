@@ -148,11 +148,10 @@
 # swap support enabled per default (yes / no)
   SWAP_ENABLED_DEFAULT="yes"
 
-# swap size if SWAP_SUPPORT=yes in MB
-  SWAPSIZE="384"
-
-# swap type if SWAP_SUPPORT=yes (file / zram)
-  SWAP_TYPE="file"
+# Vestigial LibreELEC vars: SWAPSIZE and SWAP_TYPE are NOT read by
+# ArchR's util-linux package.mk (it uses ZRAM_SWAP_SIZE / SWAP_FILE_SIZE
+# / ZRAM_COMPRESSION_ALGO from device options). Swap policy on each
+# device is zram-only when SWAP_FILE_SIZE=0; see RK3326/options.
 
 # Default weston terminal font size
   WESTONFONTSIZE="14"
@@ -188,7 +187,7 @@
 # Root filesystem type (squashfs / ext4)
   ROOTFS_TYPE="ext4"
 
-# Boot partition size (FAT32, kernel + DTBs + bootloader), in MB
+# Boot partition size (FAT32, kernel + DTBs + bootloader), in MB.
   BOOT_SIZE=256
 
 # Root partition size (ext4 rootfs), in MB

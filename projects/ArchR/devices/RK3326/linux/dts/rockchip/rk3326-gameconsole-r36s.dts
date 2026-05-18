@@ -179,6 +179,28 @@
         };
 };
 
+/*
+ * Force the rumble motor enable pin (gpio0 PB7, shared with pwm0 function)
+ * to drive LOW at gpiolib probe time. Without this, some R36S revisions
+ * (notably V21 P4 — see archr-linux/Arch-R#25) come out of reset with the
+ * pin in a high-impedance / pulled-up state, the rumble transistor latches
+ * on and the motor runs continuously through boot.
+ *
+ * The hog acquires the pin before the PWM driver, which means rumble is
+ * effectively disabled on every R36S that uses this DTS. Trade-off: a few
+ * boards lose rumble support, but every board stops vibrating non-stop.
+ * If a future R36S variant needs working rumble, gate this with a board
+ * compatible check instead of removing it outright.
+ */
+&gpio0 {
+	rumble-en-hold-low {
+		gpio-hog;
+		gpios = <RK_PB7 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "rumble_en_hold_low";
+	};
+};
+
 &pinctrl {
 	btns {
 		btn_pins: btn-pins {

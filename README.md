@@ -24,7 +24,7 @@ Arch R is a custom Linux distribution for the **R36S** handheld gaming console a
 - EmulationStation frontend with RetroArch and 18+ cores pre-installed.
 - Full audio support with speaker/headphone auto-switch.
 - Battery monitoring with capacity reporting and LED warning.
-- 20 pre-generated MIPI panel overlays (7 original + 13 clone variants).
+- 43 pre-generated MIPI panel overlays (15 original + 18 clone + 10 soysauce variants), one per motherboard revision.
 - Separate images for original and clone boards, both with hardware auto-detection.
 - Integrated cross-device local and remote network play.
 - Fine-grained control for battery life and performance.
@@ -50,7 +50,7 @@ Arch R is a custom Linux distribution for the **R36S** handheld gaming console a
 
 ### Display Panels
 
-Arch R ships 20 pre-generated MIPI panel overlays covering all known R36S display variants. Panel selection is done by copying the correct `.dtbo` file to `overlays/mipi-panel.dtbo` on the boot partition.
+Arch R ships 43 pre-generated MIPI panel overlays covering all known R36S display variants, named after the exact motherboard revision (e.g. `R36S-V21_2024-12-18_2551.dtbo`, `G80CA-MB_V1.3-20251212_Panel_8.dtbo`). Panel selection is done by copying the correct `.dtbo` file to `overlays/mipi-panel.dtbo` on the boot partition. Sources live under `config/archr-dts/{original,clone,soysauce}/<MB-revision>/`; the build extracts the panel description from each revision's `rk3326-r36s-linux.dtb` via `config/mipi-generator/generator.sh`.
 
 ## Quick Start
 

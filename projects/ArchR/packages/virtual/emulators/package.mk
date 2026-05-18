@@ -454,13 +454,24 @@ makeinstall_target() {
   add_es_system gbh
 
   ### Nintendo GameBoy Advance
-  add_emu_core gba retroarch mgba true
+  # Cortex-A35 (RK3326) doesn't sustain mGBA full-speed; use the
+  # lighter-weight gpsp as the performance default and keep mGBA as an
+  # accuracy alternative.
+  case ${DEVICE} in
+    RK3326)
+      add_emu_core gba retroarch gpsp true
+      add_emu_core gba retroarch mgba false
+      ;;
+    *)
+      add_emu_core gba retroarch mgba true
+      ;;
+  esac
   add_emu_core gba retroarch vbam false
   add_emu_core gba retroarch vba_next false
   add_emu_core gba retroarch beetle_gba false
   add_emu_core gba retroarch skyemu false
   case ${DEVICE} in
-    H700|RK3326|RK3566|S922X)
+    H700|RK3566|S922X)
       add_emu_core gba retroarch gpsp false
       ;;
     RK3399|RK3588|SM8250|SM8550|SDM845)
@@ -570,22 +581,28 @@ makeinstall_target() {
   add_es_system gbch
 
   ### Nintendo GameCube
+  # GameCube on Cortex-A35 (RK3326) does not run at usable framerates;
+  # do not list the system in ES so the user isn't lured into trying.
   case ${DEVICE} in
     RK3399|SDM845|SM8250|SM8550|SM8650)
       add_emu_core gamecube dolphin dolphin-qt-gc true
       add_emu_core gamecube dolphin dolphin-sa-gc false
       add_emu_core gamecube retroarch dolphin false
       install_script "Start Dolphin.sh"
+      add_es_system gamecube
       ;;
     RK3566|RK3588|S922X)
       add_emu_core gamecube dolphin dolphin-sa-gc true
       add_emu_core gamecube retroarch dolphin false
+      add_es_system gamecube
+      ;;
+    H700|RK3326)
       ;;
     *)
       add_emu_core gamecube retroarch dolphin true
+      add_es_system gamecube
       ;;
   esac
-  add_es_system gamecube
 
   ### Nintendo Triforce
   case ${DEVICE} in
@@ -597,6 +614,7 @@ makeinstall_target() {
   esac
 
   ### Nintendo Wii/ware
+  # Same rationale as GameCube: not viable on Cortex-A35.
   case ${DEVICE} in
     RK3399|SDM845|SM8250|SM8550|SM8650)
       add_emu_core wii dolphin dolphin-qt-wii true
@@ -605,20 +623,26 @@ makeinstall_target() {
       add_emu_core wiiware dolphin dolphin-sa-wii false
       add_emu_core wii retroarch dolphin false
       add_emu_core wiiware retroarch dolphin false
+      add_es_system wii
+      add_es_system wiiware
       ;;
     RK3566|RK3588|S922X)
       add_emu_core wii dolphin dolphin-sa-wii true
       add_emu_core wiiware dolphin dolphin-sa-wii true
       add_emu_core wii retroarch dolphin false
       add_emu_core wiiware retroarch dolphin false
+      add_es_system wii
+      add_es_system wiiware
+      ;;
+    H700|RK3326)
       ;;
     *)
       add_emu_core wii retroarch dolphin true
       add_emu_core wiiware retroarch dolphin true
+      add_es_system wii
+      add_es_system wiiware
       ;;
   esac
-  add_es_system wii
-  add_es_system wiiware
 
   ### Nintendo Wii U
   case ${DEVICE} in

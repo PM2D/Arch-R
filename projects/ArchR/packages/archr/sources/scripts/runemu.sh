@@ -4,14 +4,18 @@
 # Copyright (C) 2019-present Shanti Gilbert (https://github.com/shantigilbert)
 # Copyright (C) 2023 JELOS (https://github.com/JustEnoughLinuxOS)
 
-# Persist debug log to storage (survives reboot)
-RUNEMU_DEBUG="/storage/.cache/log/runemu-debug.log"
-exec 2>>"${RUNEMU_DEBUG}"
-set -x
-
 # Source predefined functions and variables
 . /etc/profile
 . /etc/os-release
+
+### Shell trace + persistent debug log are gated by system.loglevel=verbose.
+### Default (off/none/quiet) writes nothing to microSD on launch.
+if [ "$(get_setting system.loglevel)" = "verbose" ]; then
+  RUNEMU_DEBUG="/storage/.cache/log/runemu-debug.log"
+  mkdir -p "$(dirname "${RUNEMU_DEBUG}")"
+  exec 2>>"${RUNEMU_DEBUG}"
+  set -x
+fi
 
 ### Switch to performance mode early to speed up configuration and reduce time it takes to get into games.
 performance
@@ -101,11 +105,45 @@ EOF
 function quit() {
         ${VERBOSE} && log $0 "Cleaning up and exiting"
         bluetooth enable
+        resume_background_services
+        restore_ksm
         set_kill set "emulationstation"
         clear_screen
+        # Restore CPU governor to user pref (or ondemand fallback). Without
+        # the fallback the CPU stays in performance + boost after exit
+        # because performance() unconditionally turns boost on for the
+        # 1512 MHz turbo OPP, draining battery in the menu.
         DEVICE_CPU_GOVERNOR=$(get_setting system.cpugovernor)
-        ${DEVICE_CPU_GOVERNOR}
+        case "${DEVICE_CPU_GOVERNOR}" in
+                performance|ondemand|schedutil|powersave)
+                        ${DEVICE_CPU_GOVERNOR}
+                        ;;
+                *)
+                        ondemand
+                        ;;
+        esac
         exit $1
+}
+
+# KSM (Kernel Same-page Merging) compares page contents across processes
+# to deduplicate memory. On a Cortex-A35 in-order core it's a noticeable
+# source of jitter — exactly the kind of background CPU eater that shows
+# up as p99 frametime spikes during gameplay. Pause it for the duration
+# of the run and put it back the way the user/memory-manager left it on
+# exit.
+KSM_RUN_FILE="/sys/kernel/mm/ksm/run"
+KSM_PREVIOUS_STATE=""
+
+function pause_ksm() {
+        [ -e "${KSM_RUN_FILE}" ] || return
+        KSM_PREVIOUS_STATE="$(cat "${KSM_RUN_FILE}" 2>/dev/null)"
+        echo 0 > "${KSM_RUN_FILE}" 2>/dev/null
+}
+
+function restore_ksm() {
+        [ -e "${KSM_RUN_FILE}" ] || return
+        [ -z "${KSM_PREVIOUS_STATE}" ] && return
+        echo "${KSM_PREVIOUS_STATE}" > "${KSM_RUN_FILE}" 2>/dev/null
 }
 
 function clear_screen() {
@@ -134,6 +172,29 @@ function bluetooth() {
         fi
 }
 
+### Sync/VPN/HTTP daemons compete with the emulator for CPU, RAM and microSD
+### I/O. Stop them on launch and restart only the ones that were running on
+### exit (so we never enable a service the user had off).
+GAMEPLAY_PAUSE_SERVICES="syncthing tailscaled zerotier-one simple-http-server"
+SERVICES_PAUSED_DURING_GAME=""
+
+function pause_background_services() {
+        for svc in ${GAMEPLAY_PAUSE_SERVICES}; do
+                if systemctl is-active --quiet "${svc}" 2>/dev/null; then
+                        ${VERBOSE} && log $0 "Pausing ${svc} for gameplay"
+                        systemctl stop "${svc}" >/dev/null 2>&1
+                        SERVICES_PAUSED_DURING_GAME+=" ${svc}"
+                fi
+        done
+}
+
+function resume_background_services() {
+        for svc in ${SERVICES_PAUSED_DURING_GAME}; do
+                ${VERBOSE} && log $0 "Resuming ${svc} after gameplay"
+                systemctl start "${svc}" >/dev/null 2>&1 &
+        done
+}
+
 ### Enable logging
 case $(get_setting system.loglevel) in
   off|none)
@@ -152,6 +213,8 @@ esac
 loginit "$1" "$2" "$3" "$4"
 clear_screen
 bluetooth disable
+pause_background_services
+pause_ksm
 set_kill stop
 
 ### Determine which emulator we're launching and make appropriate adjustments before launching.
@@ -291,8 +354,13 @@ case ${EMULATOR} in
         RUNTHIS='${RUN_SHELL} /usr/bin/start_dolphin_wii.sh "${ROMNAME}" "${PLATFORM}" "${CORE}"'
       ;;
       "ports")
-        RUNTHIS='${EMUPERF} ${RUN_SHELL} "${ROMNAME}"'
-	      sed -i "/^ACTIVE_GAME=/c\ACTIVE_GAME=\"${ROMNAME}\"" /storage/.config/PortMaster/mapper.txt
+        if [[ "${ROMNAME,,}" == *".appimage" ]]; then
+          RUNTHIS='${EMUPERF} "${ROMNAME}"'
+        else
+          RUNTHIS='${EMUPERF} ${RUN_SHELL} "${ROMNAME}"'
+        fi
+        chmod +x "${ROMNAME}"
+        sed -i "/^ACTIVE_GAME=/c\ACTIVE_GAME=\"${ROMNAME}\"" /storage/.config/PortMaster/mapper.txt
         sed -i "/^ACTIVE_PLATFORM=/c\ACTIVE_PLATFORM=\"${PLATFORM}\"" /storage/.config/PortMaster/mapper.txt
       ;;
       "windows")
@@ -335,13 +403,23 @@ esac
 COOLINGPROFILE=$(get_setting cooling.profile)
 
 ### Configure GPU performance mode
+### Default to "performance" during gameplay so devfreq pins min_freq at the
+### highest OPP. ROCKNIX achieves the same effect by exposing only one GPU
+### OPP (560 MHz) in their DT; we keep the full ladder for idle/menu and
+### force the floor up here. Without this, simple_ondemand kept the GPU
+### oscillating between 200-400 MHz mid-frame, costing ~50% of PSP/N64/DC
+### performance versus competing distros.
 GPUPERF=$(get_setting "gpuperf" "${PLATFORM}" "${ROMNAME##*/}")
-if [ ! -z ${GPUPERF} ]
-then
-  ${VERBOSE} && log $0 "Set GPU performance to (${GPUPERF})"
-  gpu_performance_level ${GPUPERF}
-  get_gpu_performance_level >/tmp/.gpu_performance_level
-fi
+GPUPERF="${GPUPERF:-performance}"
+${VERBOSE} && log $0 "Set GPU performance to (${GPUPERF})"
+gpu_performance_level ${GPUPERF}
+get_gpu_performance_level >/tmp/.gpu_performance_level
+
+### Make sure Mesa's shader cache directory exists. Mesa won't create the
+### root path itself when MESA_SHADER_CACHE_DIR points somewhere new; the
+### result is silent fall-through to "no cache" and a stutter every time
+### the user re-launches a game whose shaders should already be hot.
+[ -d /storage/.cache/mesa_shader_cache ] || mkdir -p /storage/.cache/mesa_shader_cache 2>/dev/null
 
 if [ "${DEVICE_HAS_FAN}" = "true" ]
 then
@@ -442,15 +520,21 @@ then
   systemctl restart fancontrol &
 fi
 
-### Restore system GPU performance mode
+### Restore system GPU performance mode.
+### Honour an explicit per-system setting if the user picked one. Otherwise
+### keep the governor at "performance" — every transition back to ondemand
+### exercises a regulator/clock refcount path in mali_kbase that fires
+### "unbalanced disables for vdd_logic" / "Enabling unprepared clk_gpu"
+### kernel WARNs and occasionally takes the device down. Battery cost of
+### staying performance in the menu is small; PM stability is worth it.
 GPUPERF=$(get_setting "system.gpuperf")
 if [ ! -z ${GPUPERF} ]
 then
   ${VERBOSE} && log $0 "Restore system GPU performance mode (${GPUPERF})"
   gpu_performance_level ${GPUPERF} &
 else
-  ${VERBOSE} && log $0 "Restore system GPU performance mode (auto)"
-  gpu_performance_level auto &
+  ${VERBOSE} && log $0 "Keeping GPU governor at performance (mali_kbase PM workaround)"
+  # No-op: leave whatever gameplay set in place.
 fi
 rm -f /tmp/.gpu_performance_level 2>/dev/null
 

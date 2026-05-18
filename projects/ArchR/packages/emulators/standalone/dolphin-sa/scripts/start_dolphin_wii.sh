@@ -396,4 +396,5 @@ fi
 # Run Dolphin emulator
   ${GPTOKEYB} ${DOLPHIN_CORE} xbox360 &
   ${EMUPERF} /usr/bin/${DOLPHIN_CORE} ${CMD} -e "${1}"
-  kill -9 "$(pidof gptokeyb)"
+  _gptokeyb_pid="$(pidof gptokeyb 2>/dev/null)"
+  [ -n "${_gptokeyb_pid}" ] && kill -9 ${_gptokeyb_pid}

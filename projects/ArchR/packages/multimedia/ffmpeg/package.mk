@@ -134,7 +134,10 @@ pre_configure_target() {
 if [ "${FFMPEG_TESTING}" = "yes" ]; then
   PKG_FFMPEG_TESTING="--enable-encoder=wrapped_avframe --enable-muxer=null"
 else
-  PKG_FFMPEG_TESTING="--disable-programs"
+  # PortMaster_CFW.md lista /usr/bin/ffmpeg como ferramenta esperada.
+  # Habilitar ffmpeg + ffprobe sem ffplay (evita pull de SDL2 no link
+  # do binario; libavformat/avcodec ja sao usadas no resto do sistema).
+  PKG_FFMPEG_TESTING="--disable-programs --enable-ffmpeg --enable-ffprobe"
 fi
 
 configure_target() {

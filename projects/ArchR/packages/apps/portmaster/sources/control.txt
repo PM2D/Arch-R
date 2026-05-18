@@ -17,6 +17,11 @@
 
 directory="roms"
 controlfolder="/$directory/ports/PortMaster"
+# ArchR roda EmulationStation/runemu/PortMaster como root (modelo herdado de
+# JELOS/ROCKNIX). Por isso ESUDO fica vazio: ports que executam mount,
+# umount, chmod /dev/uinput, zramctl, swapon ou systemctl funcionam sem
+# privilege escalation. Se algum dia o frontend rodar como usuario comum,
+# adicionar doas/sudo e definir ESUDO="doas" (ou "sudo") aqui.
 ESUDO=""
 ESUDOKILL="-1"
 ESUDOKILL2="-1"

@@ -15,20 +15,24 @@ fi
 
 cd /storage/.config/PortMaster
 
-#Grab the latest control.txt & mapper.txt, then set correct permissions
+#Grab the latest control.txt, mapper.txt & mod_ArchR.txt, then set correct permissions
 cp /usr/config/PortMaster/control.txt control.txt
 chmod +x /storage/.config/PortMaster/control.txt
 cp /usr/config/PortMaster/mapper.txt mapper.txt
 chmod +x /storage/.config/PortMaster/mapper.txt
+if [ -f /usr/config/PortMaster/mod_ArchR.txt ]; then
+    cp /usr/config/PortMaster/mod_ArchR.txt mod_ArchR.txt
+    chmod +x /storage/.config/PortMaster/mod_ArchR.txt
+fi
 
 
 #Use our gamecontrollerdb.txt
-rm -r gamecontrollerdb.txt
+rm -rf gamecontrollerdb.txt
 ln -sf /usr/config/SDL-GameControllerDB/gamecontrollerdb.txt gamecontrollerdb.txt
 
 #Delete old PortMaster fold first (we can probably remove this later)
-if [ ! -f "/storage/roms/ports/PortMaster/pugwash" ]; then
-    rm -r /storage/roms/ports/PortMaster
+if [ -d "/storage/roms/ports/PortMaster" ] && [ ! -f "/storage/roms/ports/PortMaster/pugwash" ]; then
+    rm -rf /storage/roms/ports/PortMaster
 fi
 
 #Make sure roms/ports/PortMaster folder exists
@@ -38,17 +42,16 @@ if [ ! -d "/storage/roms/ports/PortMaster" ]; then
 fi
 
 #We dont use tasksetter, delete it
-if [ -f /storage/roms/ports/PortMaster/tasksetter ]; then
-  rm -r /storage/roms/ports/PortMaster/tasksetter
-fi
+rm -rf /storage/roms/ports/PortMaster/tasksetter
 
 #Use PortMasters gptokeyb
-rm gptokeyb
-cp /storage/roms/ports/PortMaster/gptokeyb gptokeyb
+rm -f gptokeyb
+[ -x /storage/roms/ports/PortMaster/gptokeyb ] && cp /storage/roms/ports/PortMaster/gptokeyb gptokeyb
 
 #Copy over required files for ports
 cp /storage/.config/PortMaster/control.txt /storage/roms/ports/PortMaster/control.txt
 cp /storage/.config/PortMaster/mapper.txt /storage/roms/ports/PortMaster/mapper.txt
+[ -f /storage/.config/PortMaster/mod_ArchR.txt ] && cp /storage/.config/PortMaster/mod_ArchR.txt /storage/roms/ports/PortMaster/mod_ArchR.txt
 cp /storage/.config/PortMaster/gamecontrollerdb.txt /storage/roms/ports/PortMaster/gamecontrollerdb.txt
 cp /usr/bin/oga_controls* /storage/roms/ports/PortMaster/
 

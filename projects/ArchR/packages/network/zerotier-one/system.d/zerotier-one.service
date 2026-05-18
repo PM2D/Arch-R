@@ -3,6 +3,7 @@ Description=zerotier-one
 Wants=network-pre.target
 After=network-pre.target
 RequiresMountsFor=/storage
+ConditionPathExists=/storage/.cache/services/zerotier.conf
 
 [Service]
 ExecStart=/usr/sbin/zerotier-one /storage/.config/zerotier/

@@ -1,0 +1,25 @@
+From: ArchR <noreply@archr-linux>
+Subject: [PATCH] codec2_native: compilar generate_codebook direto com host cc
+
+codec2 0.9.2 usa ExternalProject_Add(codec2_native) para construir uma copia
+nativa de `generate_codebook` durante cross-compile. Sem CMAKE_ARGS explicitos
+a sub-build herda CMAKE_TOOLCHAIN_FILE/CFLAGS/CXXFLAGS do parent (aarch64) e
+falha (compilador cc do host nao aceita -mabi=lp64 / -mno-outline-atomics).
+
+Substituimos o build CMake por um single-shot `cc -O2 -lm`, que compila o
+gerador no host sem nenhuma heranca de toolchain.
+
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -79,8 +79,9 @@ if(CMAKE_CROSSCOMPILING)
+     include(ExternalProject)
+     ExternalProject_Add(codec2_native
+        SOURCE_DIR ${CMAKE_SOURCE_DIR}
+-       BUILD_COMMAND $(MAKE) generate_codebook
+-       INSTALL_COMMAND ${CMAKE_COMMAND} -E copy src/generate_codebook ${CMAKE_CURRENT_BINARY_DIR}
++       CONFIGURE_COMMAND ""
++       BUILD_COMMAND cc -O2 -o <BINARY_DIR>/generate_codebook ${CMAKE_SOURCE_DIR}/src/generate_codebook.c -lm
++       INSTALL_COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/generate_codebook ${CMAKE_CURRENT_BINARY_DIR}
+     )
+     add_executable(generate_codebook IMPORTED)
+     set_target_properties(generate_codebook PROPERTIES

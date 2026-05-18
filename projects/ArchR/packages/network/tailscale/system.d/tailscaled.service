@@ -4,6 +4,7 @@ Documentation=https://tailscale.com/kb/
 Wants=network-pre.target
 After=network-pre.target systemd-resolved.service
 RequiresMountsFor=/storage
+ConditionPathExists=/storage/.cache/services/tailscaled.conf
 
 [Service]
 EnvironmentFile=/storage/.config/tailscaled.defaults

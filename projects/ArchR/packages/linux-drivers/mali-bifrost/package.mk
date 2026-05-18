@@ -15,8 +15,8 @@ case ${DEVICE} in
   PKG_PATCH_DIRS+=" 6.12-LTS"
   ;;
   *)
-  PKG_VERSION="39da994bb6fc8819e5e8c1873907dd21d17e53c1"
-  PKG_URL="http://github.com/archr/mali_kbase/archive/${PKG_VERSION}.tar.gz"
+  PKG_VERSION="422e192b7e3aa3140f34de34765b798817c1f749"
+  PKG_URL="https://github.com/archr-linux/mali_kbase/archive/${PKG_VERSION}.tar.gz"
   ;;
 esac
 

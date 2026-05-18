@@ -3,29 +3,34 @@
 #==============================================================================
 # Arch R - Generate Panel DTBO Overlays
 #==============================================================================
-# Generates DTBO overlay files for ALL panel variants using archr-dtbo.py
+# Each MB (motherboard) variant lives under config/archr-dts/<subdevice>/<MB>/
+# and ships its kernel DTB as rk3326-r36s-linux.dtb. We extract one DTBO per
+# MB folder, named after the folder (spaces → underscores) so users can pick
+# the exact MB instead of a generic "Panel N" that historically collided
+# across distinct boards.
 #
 # Sources:
-#   - R36S originals: DTS in config/archr-dts/R36S-DTB/DTS/
-#   - R36S clones: DTBs in config/archr-dts/R36S-Clones-DTB/
-#   - EE clone plugin overlays: hand-written overlay DTS in
-#     config/archr-dts/R36S-clone-plugin-overlays/ (compiled with dtc -@ only)
+#   config/archr-dts/clone/<MB>/rk3326-r36s-linux.dtb
+#   config/archr-dts/original/<MB>/rk3326-r36s-linux.dtb
+#   config/archr-dts/soysauce/<MB>/rk3326-r36s-linux.dtb
 #
-# Output:
-#   - output/panels/original/  -> overlays for original R36S image
-#   - output/panels/clone/     -> overlays for clone R36S image
+# Outputs:
+#   config/mipi-generator/output/clone/<MB-sanitized>.dtbo
+#   config/mipi-generator/output/original/<MB-sanitized>.dtbo
+#   config/mipi-generator/output/soysauce/<MB-sanitized>.dtbo
 #==============================================================================
 
-# Don't use set -e: individual panel failures should not abort the entire script
 set +e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-DTS_DIR="${ROOT_DIR}/config/archr-dts/R36S-DTB/DTS"
-CLONES_DIR="${ROOT_DIR}/config/archr-dts/R36S-Clones-DTB"
-OUTPUT_ORIG="${ROOT_DIR}/config/mipi-generator/output/original"
-OUTPUT_CLONE="${ROOT_DIR}/config/mipi-generator/output/clone"
+DTS_ROOT="${ROOT_DIR}/config/archr-dts"
+OUTPUT_BASE="${MIPI_OUT:-${ROOT_DIR}/config/mipi-generator/output}"
 DTBO_TOOL="$SCRIPT_DIR/archr-dtbo.py"
+INPUT_DTB_NAME="rk3326-r36s-linux.dtb"
+
+# Subdevices to process. Order matters only for log readability.
+SUBDEVICES=(original clone soysauce)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,242 +40,164 @@ log() { echo -e "${GREEN}[PANEL]${NC} $1"; }
 warn() { echo -e "${YELLOW}[PANEL] WARNING:${NC} $1"; }
 error() { echo -e "${RED}[PANEL] ERROR:${NC} $1"; exit 1; }
 
-# Check prerequisites
 command -v dtc &>/dev/null || error "dtc not found"
 command -v python3 &>/dev/null || error "python3 not found"
 python3 -c "import fdt" 2>/dev/null || error "Python fdt package not found. Install with: pip3 install fdt"
 [ -f "$DTBO_TOOL" ] || error "archr-dtbo.py not found at: $DTBO_TOOL"
 
-mkdir -p "$OUTPUT_ORIG" "$OUTPUT_CLONE"
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
-
 GENERATED=0
 FAILED=0
+SKIPPED=0
 
-#------------------------------------------------------------------------------
-# Helper: generate overlay from DTS file (compile DTS->DTB, then run dtbo.py)
-#------------------------------------------------------------------------------
-generate_from_dts() {
-    local dts_file="$1"
-    local out_file="$2"
-    local flags="$3"
-    local label="$4"
-
-    if [ ! -f "$dts_file" ]; then
-        warn "  DTS not found: $dts_file"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
-
-    local tmp_dtb="$TMPDIR/$(basename "${dts_file%.dts}").dtb"
-    if ! dtc -I dts -O dtb -@ "$dts_file" -o "$tmp_dtb" 2>/dev/null; then
-        warn "  Failed to compile DTS: $(basename "$dts_file")"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
-
-    if python3 "$DTBO_TOOL" "$tmp_dtb" $flags -o "$out_file" 2>/dev/null; then
-        local sz=$(stat -c%s "$out_file")
-        log "  OK: $(basename "$out_file") (${sz} bytes) [$label]"
-        GENERATED=$((GENERATED + 1))
-    else
-        warn "  archr-dtbo.py failed: $(basename "$out_file")"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
+# Map "G80C-MB V1.1-20250319 Panel 8" → "G80C-MB_V1.1-20250319_Panel_8".
+# Spaces are the only character that needs taming; dashes, dots and digits
+# are already filename-safe.
+sanitize_mb_name() {
+    echo "${1// /_}"
 }
 
-#------------------------------------------------------------------------------
-# Helper: generate overlay from pre-compiled DTB
-#------------------------------------------------------------------------------
-generate_from_dtb() {
-    local dtb_file="$1"
-    local out_file="$2"
-    local flags="$3"
-    local label="$4"
-
-    if [ ! -f "$dtb_file" ]; then
-        warn "  DTB not found: $dtb_file"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
-
-    if python3 "$DTBO_TOOL" "$dtb_file" $flags -o "$out_file" 2>/dev/null; then
-        local sz=$(stat -c%s "$out_file")
-        log "  OK: $(basename "$out_file") (${sz} bytes) [$label]"
-        GENERATED=$((GENERATED + 1))
-    else
-        warn "  archr-dtbo.py failed: $(basename "$out_file")"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
-}
-
-#------------------------------------------------------------------------------
-# Helper: compile overlay plugin DTS with dtc -@ (no archr-dtbo.py)
-#------------------------------------------------------------------------------
-generate_from_plugin_dts() {
-    local dts_file="$1"
-    local out_file="$2"
+generate_overlay() {
+    local dtb="$1"
+    local out="$2"
     local label="$3"
+    local flags="$4"   # optional, e.g. "JPmm-SRs"
 
-    if [ ! -f "$dts_file" ]; then
-        warn "  Plugin DTS not found: $dts_file"
-        FAILED=$((FAILED + 1))
-        return 1
-    fi
+    local cmd=(python3 "$DTBO_TOOL" "$dtb")
+    [ -n "$flags" ] && cmd+=("$flags")
+    cmd+=(-o "$out")
 
-    if dtc -I dts -O dtb -@ "$dts_file" -o "$out_file" 2>/dev/null; then
-        local sz=$(stat -c%s "$out_file")
-        log "  OK: $(basename "$out_file") (${sz} bytes) [$label]"
+    if "${cmd[@]}" 2>/dev/null; then
+        local sz=$(stat -c%s "$out")
+        log "  OK: $(basename "$out") (${sz} bytes) [$label]"
         GENERATED=$((GENERATED + 1))
     else
-        warn "  dtc failed plugin overlay: $(basename "$dts_file")"
+        warn "  archr-dtbo.py failed: $(basename "$out")"
         FAILED=$((FAILED + 1))
         return 1
     fi
 }
 
-#------------------------------------------------------------------------------
-# Original R36S panels (DTS files)
-#------------------------------------------------------------------------------
-log "=== Original R36S Panel Overlays ==="
-log "Source: $DTS_DIR"
-log "Output: $OUTPUT_ORIG"
-log ""
+# 6 variants per panel cover every joypad×audio override the user can pick
+# from the flasher UI. Dno (skip vendor mode) is applied as a runtime string
+# transform on panel_description so we don't need to multiply this set by 2.
+#
+# Default-joypad mapping: every R36S board we ship is K36-style except for
+# the Y3506 family ("soysauce") which uses MyMini-style multi-ADC sticks.
+# Our vendor DTBs are partial extracts that don't expose /adc-keys, so the
+# generator can't auto-detect — we baked the choice in here per subdevice.
+#
+# Suffix pairs: <flag string for archr-dtbo.py> | <filename suffix>
+#   ""                | ""              -> default for the subdevice
+#   "JPk36"           | "_JPk36"        -> force K36 joypad
+#   "JPmm"            | "_JPmm"         -> force MyMini joypad
+#   "SRs"             | "_SRs"          -> force simple audio routing
+#   "JPk36-SRs"       | "_JPk36_SRs"    -> K36 joypad + simple audio
+#   "JPmm-SRs"        | "_JPmm_SRs"     -> MyMini joypad + simple audio
+VARIANT_FLAGS_K36=(""       "JPk36"     "JPmm"     "SRs"      "JPk36-SRs"     "JPmm-SRs")
+VARIANT_SUFFIX_K36=(""      "_JPk36"    "_JPmm"    "_SRs"     "_JPk36_SRs"    "_JPmm_SRs")
+VARIANT_FLAGS_MM=("JPmm"    "JPk36"     "JPmm"     "JPmm-SRs" "JPk36-SRs"     "JPmm-SRs")
+VARIANT_SUFFIX_MM=(""       "_JPk36"    "_JPmm"    "_SRs"     "_JPk36_SRs"    "_JPmm_SRs")
 
-# Panel index -> DTS filename
-declare -A ORIG_PANELS=(
-    [panel0]="Panel0.dts"
-    [panel1]="Panel1.dts"
-    [panel2]="Panel2.dts"
-    [panel3]="Panel3.dts"
-    [panel4]="Panel4.dts"
-    [panel4-v22]="Panel4-V22.dts"
-    [panel5]="Panel5.dts"
-    [r35s-rumble]="R35S-Rumble.dts"
-    [r36s-plus]="R36S-Plus.dts"
-    [r46h]="R46H.dts"
-    [rgb20s]="RGB20S.dts"
-)
+# Pick the variant flag/suffix arrays that match each subdevice's expected
+# default. Every Y3506 (soysauce) vendor DTB we have inspected (V03 1104,
+# V03 1210 2507/2533, V03 0317, V04 2528, V04 253x P6/P7, V04 2548, V05
+# 2551, V05 2601) ships odroidgo3-joypad with amux-count=4 and
+# amux-channel-mapping — that's K36 (single-ADC + amux). The earlier
+# assumption that Y3506 was MyMini was wrong, and forcing JPmm here
+# made the overlay inject multi-ADC io-channels that the singleadc
+# driver ignores, leaving the sticks dead (see issue #27). K36 is the
+# safe default everywhere; MyMini boards (if any ever appear) can pick
+# the _JPmm suffix variant explicitly.
+default_variant_arrays() {
+    echo "K36"
+}
 
-ORIG_ORDER=(panel0 panel1 panel2 panel3 panel4 panel4-v22 panel5 r35s-rumble r36s-plus r46h rgb20s)
+process_subdevice() {
+    local sd="$1"
+    local src_dir="${DTS_ROOT}/${sd}"
+    local out_dir="${OUTPUT_BASE}/${sd}"
 
-for key in "${ORIG_ORDER[@]}"; do
-    dts="${ORIG_PANELS[$key]}"
-    log "Original ${key}: ${dts}"
-    generate_from_dts "$DTS_DIR/$dts" "$OUTPUT_ORIG/${key}.dtbo" "" "$key"
-done
+    if [ ! -d "$src_dir" ]; then
+        warn "Subdevice source dir missing: $src_dir"
+        return
+    fi
 
-# Panel 6: no DTS source, use stock DTB
-log "Original panel6: R36S/Panel 6/rk3326-r35s-linux.dtb"
-generate_from_dtb "${ROOT_DIR}/config/archr-dts/R36S-DTB/R36S/Panel 6/rk3326-r35s-linux.dtb" "$OUTPUT_ORIG/panel6.dtbo" "" "panel6"
+    mkdir -p "$out_dir"
 
-#------------------------------------------------------------------------------
-# Clone R36S panels (pre-compiled DTBs)
-#------------------------------------------------------------------------------
-log ""
-log "=== Clone R36S Panel Overlays ==="
-log "Source: $CLONES_DIR"
-log "Output: $OUTPUT_CLONE"
-log ""
-
-declare -A CLONE_PANELS=(
-    [clone_panel_1]="Panel 1/rf3536k4ka.dtb"
-    [clone_panel_2]="Panel 2/rf3536k4ka.dtb"
-    [clone_panel_3]="Panel 3/rf3536k4ka.dtb"
-    [clone_panel_4]="Panel 4/rf3536k4ka.dtb"
-    [clone_panel_5]="Panel 5/rf3536k4ka.dtb"
-    [clone_panel_6]="Panel 6/rf3536k4ka.dtb"
-    [clone_panel_7]="Panel 7/rf3536k4ka.dtb"
-    [clone_panel_8]="Panel 8/rf3536k4ka.dtb"
-    [clone_panel_9]="Panel 9/rf3536k4ka.dtb"
-    [clone_panel_10]="Panel 10/rf3536k3ka.dtb"
-    [r36_max]="R36 Max/rf3536k4ka.dtb"
-    [rx6s]="RX6S/rf351g3ka.dtb"
-)
-
-CLONE_ORDER=(clone_panel_1 clone_panel_2 clone_panel_3 clone_panel_4 clone_panel_5
-             clone_panel_6 clone_panel_7 clone_panel_8 clone_panel_9 clone_panel_10
-             r36_max rx6s)
-
-for key in "${CLONE_ORDER[@]}"; do
-    dtb="${CLONE_PANELS[$key]}"
-    log "Clone ${key}: ${dtb}"
-    generate_from_dtb "$CLONES_DIR/$dtb" "$OUTPUT_CLONE/${key}.dtbo" "" "$key"
-done
-
-#------------------------------------------------------------------------------
-# Clone R36S — hand-written plugin overlays (dts → dtbo via dtc -@)
-#------------------------------------------------------------------------------
-PLUGIN_CLONE_DTS_DIR="${ROOT_DIR}/config/archr-dts/R36S-clone-plugin-overlays"
-log ""
-log "=== Clone EE plugin overlays (dtc -@) ==="
-log "Source: $PLUGIN_CLONE_DTS_DIR"
-log "Output: $OUTPUT_CLONE"
-log ""
-
-declare -A PLUGIN_CLONE_DTS=(
-    [clone_panel_11]="eeclone-mipi-panel-640x480.dts"
-)
-
-PLUGIN_CLONE_ORDER=(clone_panel_11)
-
-for key in "${PLUGIN_CLONE_ORDER[@]}"; do
-    dts="${PLUGIN_CLONE_DTS[$key]}"
-    log "Plugin clone ${key}: ${dts}"
-    generate_from_plugin_dts "$PLUGIN_CLONE_DTS_DIR/$dts" "$OUTPUT_CLONE/${key}.dtbo" "$key"
-done
-
-#------------------------------------------------------------------------------
-# Soysauce R36S panels (pre-compiled DTBs from Y3506 variants)
-#------------------------------------------------------------------------------
-SOYSAUCE_DIR="${ROOT_DIR}/config/archr-dts/R36S-soysauce"
-OUTPUT_SOYSAUCE="${MIPI_OUT:-${ROOT_DIR}/config/mipi-generator/output}/soysauce"
-mkdir -p "$OUTPUT_SOYSAUCE"
-
-if [ -d "$SOYSAUCE_DIR" ]; then
     log ""
-    log "=== Soysauce R36S Panel Overlays ==="
-    log "Source: $SOYSAUCE_DIR"
-    log "Output: $OUTPUT_SOYSAUCE"
-    log ""
+    log "=== ${sd} panel overlays ==="
+    log "Source: $src_dir"
+    log "Output: $out_dir"
 
-    declare -A SOYSAUCE_PANELS=(
-        [ss_v03_20241104]="Y3506_V03_20241104/rk3326-r36s-linux.dtb"
-        [ss_v03_20241210]="Y3506_v03_20241210/rk3326-r36s-linux.dtb"
-        [ss_v03_20250317]="Y3506_V03_20250317/rk3326-r36s-linux.dtb"
-        [ss_v04_20250529_253x]="Y3506_V04_20250529 253x Panel 6/rk3326-r36s-linux.dtb"
-        [ss_v04_20250529_2548]="Y3506_V04_20250529 2548/rk3326-r36s-linux.dtb"
-        [ss_v05_20251215_2551]="Y3506_V05_20251215 2551/rk3326-r36s-linux.dtb"
-        [ss_v05_20251215_2601]="Y3506_V05_20251215 2601/rk3326-r36s-linux.dtb"
-    )
+    local kind="$(default_variant_arrays "$sd")"
+    local -n flags_arr="VARIANT_FLAGS_${kind}"
+    local -n suffix_arr="VARIANT_SUFFIX_${kind}"
+    log "Default joypad: ${kind} (${flags_arr[0]:-K36})"
 
-    SOYSAUCE_ORDER=(ss_v03_20241104 ss_v03_20241210 ss_v03_20250317
-                    ss_v04_20250529_253x ss_v04_20250529_2548
-                    ss_v05_20251215_2551 ss_v05_20251215_2601)
+    # SDORIG: trust the `odroidgo3 in compat` early-return in archr-dtbo.py.
+    # Original and soysauce kernel DTBs (rk3326-odroid-go2.dtb and
+    # rk3326-gameconsole-soysauce.dtb) already carry the correct
+    # reset-gpios / vcc18-lcd0 / backlight wiring, so the DTBO only needs
+    # the panel description. Clone hardware needs the GPIO overrides
+    # because the eeclone kernel DTB is wired differently from the actual
+    # boards; several clone vendor DTBs are mislabeled with `odroidgo3`
+    # compatible and previously slipped through the short-circuit, leaving
+    # the overlay without GPIO fixes (= "backlight on, no image").
+    local sd_prefix=""
+    case "$sd" in
+        original|soysauce) sd_prefix="SDORIG" ;;
+    esac
 
-    for key in "${SOYSAUCE_ORDER[@]}"; do
-        dtb="${SOYSAUCE_PANELS[$key]}"
-        log "Soysauce ${key}: ${dtb}"
-        generate_from_dtb "$SOYSAUCE_DIR/$dtb" "$OUTPUT_SOYSAUCE/${key}.dtbo" "" "$key"
-    done
-fi
+    local count=0
+    # Sort makes output deterministic across filesystems.
+    while IFS= read -r mb_dir; do
+        local mb_name="$(basename "$mb_dir")"
+        local input_dtb="${mb_dir}/${INPUT_DTB_NAME}"
 
-#------------------------------------------------------------------------------
-# Summary
-#------------------------------------------------------------------------------
+        if [ ! -f "$input_dtb" ]; then
+            warn "  ${mb_name}: missing ${INPUT_DTB_NAME}"
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+
+        local sanitized="$(sanitize_mb_name "$mb_name")"
+        log "  ${mb_name}"
+
+        local i
+        for i in "${!flags_arr[@]}"; do
+            local flags="${flags_arr[$i]}"
+            local suffix="${suffix_arr[$i]}"
+            local out_file="${out_dir}/${sanitized}${suffix}.dtbo"
+            local effective_flags="$flags"
+            if [ -n "$sd_prefix" ]; then
+                effective_flags="${sd_prefix}${flags:+-${flags}}"
+            fi
+            generate_overlay "$input_dtb" "$out_file" "${sd}/${mb_name}${suffix}" "$effective_flags"
+        done
+        count=$((count + 1))
+    done < <(find "$src_dir" -mindepth 1 -maxdepth 1 -type d | sort)
+
+    if [ "$count" -eq 0 ]; then
+        warn "${sd}: no MB folders found"
+    fi
+}
+
+mkdir -p "$OUTPUT_BASE"
+
+for sd in "${SUBDEVICES[@]}"; do
+    process_subdevice "$sd"
+done
+
 log ""
 log "=== Panel Generation Complete ==="
-log "Generated: ${GENERATED}  Failed: ${FAILED}"
-log ""
-log "Original overlays: $OUTPUT_ORIG/"
-ls -1 "$OUTPUT_ORIG"/*.dtbo 2>/dev/null | while read f; do
-    log "  $(basename "$f") ($(stat -c%s "$f") bytes)"
-done
-log ""
-log "Clone overlays: $OUTPUT_CLONE/"
-ls -1 "$OUTPUT_CLONE"/*.dtbo 2>/dev/null | while read f; do
-    log "  $(basename "$f") ($(stat -c%s "$f") bytes)"
+log "Generated: ${GENERATED}  Failed: ${FAILED}  Skipped: ${SKIPPED}"
+
+for sd in "${SUBDEVICES[@]}"; do
+    out_dir="${OUTPUT_BASE}/${sd}"
+    [ -d "$out_dir" ] || continue
+    log ""
+    log "${sd} overlays: ${out_dir}/"
+    ls -1 "$out_dir"/*.dtbo 2>/dev/null | while read -r f; do
+        log "  $(basename "$f") ($(stat -c%s "$f") bytes)"
+    done
 done

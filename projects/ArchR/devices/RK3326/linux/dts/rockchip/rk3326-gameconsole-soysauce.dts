@@ -53,7 +53,14 @@
 	};
 
 	joypad: odroidgo3-joypad {
-		compatible = "archr-joypad", "odroidgo3-joypad";
+		/* All Y3506 (soysauce) boards we've seen use single-ADC + amux
+		 * (amux-count=4, amux-channel-mapping=<3 2 0 1>) — that is the
+		 * archr-singleadc-joypad driver's wire protocol. The previous
+		 * "archr-joypad" / "odroidgo3-joypad" compat strings bind to
+		 * the multi-ADC driver, which ignores the amux-* props and
+		 * leaves the analog sticks dead (see archr-linux/Arch-R#27).
+		 */
+		compatible = "archr-singleadc-joypad";
 		pwms = <&pwm0 0 200000000 0>;
 		pwm-names = "enable";
 		rumble-boost-weak = <0x0000>;

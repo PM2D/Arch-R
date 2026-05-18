@@ -71,7 +71,12 @@ def panel_to_desc(panel, args):
                 ]
 
         mode = {'clock': clock, 'hor': hor, 'ver': ver}
-        if (m.get_property("phandle").value == native):
+        # Some vendor DTBs (e.g. R36S-V20 2025-05-18) omit `phandle` on
+        # individual modes. A mode without a phandle can't be the native
+        # default, so skip the comparison instead of crashing.
+        phandle_prop = m.get_property("phandle")
+        is_native = phandle_prop is not None and phandle_prop.value == native
+        if is_native:
             mode['default'] = True
 
         htotal = sum(hor)
@@ -80,7 +85,7 @@ def panel_to_desc(panel, args):
 
         if fps not in modes:
             modes[fps] = mode
-        if (m.get_property("phandle").value == native):
+        if is_native:
             modes[fps]['default'] = True
             orig_def_fps = fps
 
@@ -337,9 +342,17 @@ def make_dtbo(dtb_data, args):
 
     compat = dt.get_node('/').get_property('compatible').data[0]
     args['logger'].info(f"compatible {compat}")
-    if 'odroidgo3' in compat:
-        # R36S base DTS already has reset-gpios, power-supply, backlight
-        # Only the panel description/timings/init-sequence are needed in overlay
+    # Original-only short-circuit: the original kernel DTB (rk3326-odroid-go2)
+    # already has the correct reset-gpios, power-supply and backlight wiring,
+    # so the DTBO only needs panel description/timings/init-sequence.
+    #
+    # Gate by subdevice (passed as 'SDORIG' from generator.sh), NOT by vendor
+    # compatible alone: several clone vendor DTBs (e.g. G80CA V1.2 04-22/04-23
+    # Panel 8 and 9, G80C V1.1 Panel 9) ship with
+    # `compatible = "rockchip,rk3326-odroidgo3-linux"` despite being clone
+    # hardware. Trusting that string skipped the GPIO overrides on clones and
+    # produced the "backlight on, no image" black screen on those boards.
+    if 'SDORIG' in args['flags'] and 'odroidgo3' in compat:
         return overlay.to_dtb()
 
     # copy reset config
@@ -374,18 +387,19 @@ def make_dtbo(dtb_data, args):
         pass
 
 
-    # If stock DTB does not have ADC keys, disable adc-keys in overlay
+    # If the vendor DTB explicitly disables /adc-keys, mirror that decision
+    # in the overlay. We deliberately do NOT treat "/adc-keys absent" as
+    # MyMini hardware: most ArchR vendor DTBs are partial extractions that
+    # don't ship that node even when the underlying board has K36-style
+    # single-ADC sticks. Auto-detecting MyMini from absence broke input on
+    # every K36 R36S in our 43-board set. Default is K36 unless JPmm is
+    # explicitly requested or /adc-keys is present-but-disabled.
     need_adckeys_disable = False
-    if not dt.exist_node('/adc-keys'):
-        need_adckeys_disable = True
-    else:
+    if dt.exist_node('/adc-keys'):
         adckeys_orig = dt.get_node('/adc-keys')
         adckeys_status = adckeys_orig.get_property('status')
         if (adckeys_status) and (adckeys_status.value == 'disabled'):
             need_adckeys_disable = True
-        else:
-            # usually we just don't have status property, so consider this valid
-            need_adckeys_disable = False
     if need_adckeys_disable:
         noadck_ovl = add_overlay(overlay, '/')
         overlay.set_property('dtbo_comment', 'deliberately-disabled-adc-keys', path=noadck_ovl.path+'/__overlay__/adc-keys')
@@ -443,10 +457,24 @@ def make_dtbo(dtb_data, args):
 
         force_simple_audio_routing = ('SRs' in args['flags'])
 
+        # Detect amplifier GPIO. Direct `spk-con-gpio` on the sound node is
+        # the legacy path. Newer R36S clones (post-2025-03-18 batches) wire
+        # the amplifier through `rockchip,codec/spk-ctl-gpios` instead, so
+        # we follow the codec phandle as a fallback.
+        amp_gpio = None
+        if not force_simple_audio_routing:
+            if snd.exist_property('spk-con-gpio'):
+                amp_gpio = snd.get_property('spk-con-gpio').data
+            elif snd.exist_property('rockchip,codec'):
+                snd_codec_ph = snd.get_property('rockchip,codec').value
+                snd_codec_path = resolve_phandle(dt, snd_codec_ph)
+                snd_codec = dt.get_node(snd_codec_path)
+                if snd_codec.exist_property('spk-ctl-gpios'):
+                    amp_gpio = snd_codec.get_property('spk-ctl-gpios').data
+
         # Determine preset, configure amplifier if needed
-        if snd.exist_property('spk-con-gpio') and not force_simple_audio_routing:
+        if amp_gpio:
             rk817_path = hpdet_ovl.path+'/__overlay__/rk817-sound-amplified'
-            amp_gpio = snd.get_property('spk-con-gpio').data
             amp_gpio_sym = [p.name for p in symbols.props if p.value == resolve_phandle(dt, amp_gpio[0])][0]
             gpio_num = int(amp_gpio_sym[4:])
             args['logger'].info(f"spk-con-gpio {amp_gpio_sym} {amp_gpio[1]} on {hpdet_ovl.path}")
